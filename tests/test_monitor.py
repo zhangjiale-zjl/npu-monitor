@@ -19,6 +19,7 @@ from npu_platform import detect_platform, model_generation, server_generation, s
 
 TESTS = Path(__file__).parent
 FIXTURE = (TESTS / "fixtures" / "npu-smi-synthetic.txt").read_text(encoding="utf-8")
+A3_FIXTURE = (TESTS / "fixtures" / "npu-smi-a3-synthetic.txt").read_text(encoding="utf-8")
 
 
 def wait_until(predicate, timeout=3):
@@ -31,6 +32,51 @@ def wait_until(predicate, timeout=3):
 
 
 class ParserTests(unittest.TestCase):
+    def test_a3_eight_cards_sixteen_independent_dies(self):
+        result = parse_info(A3_FIXTURE)
+        devices = result["devices"]
+        self.assertIsNone(result["warning"])
+        self.assertEqual(len(devices), 16)
+        self.assertEqual({device["npu_id"] for device in devices}, set(range(8)))
+        self.assertEqual([(device["npu_id"], device["chip_id"]) for device in devices],
+                         [(card, die) for card in range(8) for die in range(2)])
+        self.assertEqual([device["phy_id"] for device in devices], list(range(16)))
+        self.assertTrue(all(device["device_id"] is None for device in devices))
+        self.assertEqual([device["aicore_percent"] for device in devices[:2]], [10, 20])
+        self.assertEqual([device["health"] for device in devices[:2]], ["OK", "Critical"])
+        self.assertEqual([device["hbm"]["used_mb"] for device in devices],
+                         [1024 * (index + 1) for index in range(16)])
+        self.assertEqual(devices[0]["hbm"]["percent"], 1.56)
+        self.assertEqual(devices[1]["hbm"]["percent"], 3.12)
+        self.assertEqual(devices[0]["power_w"], 100)
+        self.assertIsNone(devices[1]["power_w"])
+        self.assertEqual(devices[-1]["bus_id"], "0000:2f:00.0")
+        self.assertEqual(len(result["processes"]), 17)
+        self.assertEqual({(process["npu_id"], process["chip_id"]) for process in result["processes"]},
+                         {(device["npu_id"], device["chip_id"]) for device in devices})
+
+    def test_chip_device_column_and_noncontiguous_ids(self):
+        result = parse_info("| NPU Name | Health | Power(W) Temp(C) |\n"
+                            "| Chip Device | Bus-Id | AICore(%) HBM-Usage(MB) |\n"
+                            "| 7 DemoNPU | OK | 123 40 |\n"
+                            "| 1 42 | NA | 75 8192 / 32768 |")
+        self.assertIsNone(result["warning"])
+        device = result["devices"][0]
+        self.assertEqual((device["npu_id"], device["chip_id"], device["device_id"]), (7, 1, 42))
+        self.assertIsNone(device["phy_id"])
+        self.assertEqual(device["hbm"]["percent"], 25)
+
+    def test_incomplete_die_warns_instead_of_reporting_complete_success(self):
+        result = parse_info(A3_FIXTURE.replace("| 1 15 |", "| unsupported |"))
+        self.assertEqual(len(result["devices"]), 15)
+        self.assertIn("1 条", result["warning"])
+
+    def test_demo_a3_has_both_dies_per_card(self):
+        devices = parse_info(demo_output(1, 1))["devices"]
+        self.assertEqual(len(devices), 16)
+        self.assertEqual({device["npu_id"] for device in devices}, set(range(8)))
+        self.assertEqual([device["phy_id"] for device in devices], list(range(16)))
+
     def test_synthetic_devices_health_and_processes(self):
         result = parse_info(FIXTURE)
         self.assertIsNone(result["warning"])
@@ -291,6 +337,26 @@ class WorkerTests(unittest.TestCase):
                 monitor.reconfigure(validate_config(state["config"], TESTS, config))
                 self.assertIs(monitor.workers[worker.node.id], worker)
                 self.assertNotIn("name", json.loads(monitor.path.read_text())["nodes"][0])
+            finally:
+                monitor.close()
+
+    def test_a3_worker_preserves_all_dies_processes_and_average(self):
+        config = validate_config({"nodes": [{"host": "demo"}]}, TESTS)
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, \
+                patch.object(SSHSession, "query", return_value=(A3_FIXTURE, 0)), \
+                patch.object(SSHSession, "query_system", return_value=("Synthetic Server A3", 0)), \
+                patch.object(SSHSession, "query_board", return_value=("unsupported", 2)):
+            monitor = Monitor(config, Path(temporary) / "nodes.json", once=True)
+            try:
+                worker = next(iter(monitor.workers.values()))
+                worker.thread.join(timeout=2)
+                self.assertFalse(worker.thread.is_alive())
+                node = monitor.snapshot()["nodes"][0]
+                self.assertEqual(node["platform"], "A3")
+                self.assertEqual(node["status"], "ok")
+                self.assertEqual(len(node["devices"]), 16)
+                self.assertEqual(len(node["processes"]), 17)
+                self.assertEqual(node["history"][0]["value"], 43.75)
             finally:
                 monitor.close()
 

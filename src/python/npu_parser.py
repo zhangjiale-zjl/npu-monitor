@@ -31,7 +31,9 @@ def parse_info(output):
     """Return devices and processes; unknown formats retain the raw output."""
     devices, processes = [], []
     top_headers, bottom_headers = [], []
+    chip_identifier = None
     pending = None
+    incomplete = 0
     process_mode = False
     version = None
     for line in ANSI.sub("", output).splitlines():
@@ -44,6 +46,7 @@ def parse_info(output):
         joined = " ".join(cells)
         if "process id" in joined.lower():
             process_mode = True
+            incomplete += pending is not None
             pending = None
             continue
         if process_mode:
@@ -67,23 +70,36 @@ def parse_info(output):
             continue
         if "AICore(%)" in cells[-1]:
             bottom_headers = re.findall(r"[A-Za-z][A-Za-z0-9_-]*\([^)]*\)", cells[-1])
+            identifiers = cells[0].split()
+            chip_identifier = identifiers[1].lower() if len(identifiers) > 1 else None
+            continue
+        # A3 prints "Chip Phy-ID"; some drivers print "Chip Device".
+        # These numeric rows must be handled before "NPU Name" rows.
+        ids = re.fullmatch(r"(\d+)(?:\s+(\d+))?", cells[0])
+        if ids:
+            if pending and bottom_headers:
+                values = metric_values(cells[-1], bottom_headers)
+                utilization = number(values.get("AICore(%)", ""))
+                if utilization is not None and not 0 <= utilization <= 100:
+                    utilization = None
+                identifier = int(ids[2]) if ids[2] is not None else None
+                devices.append({**pending, "chip_id": int(ids[1]), "bus_id": cells[1],
+                                "phy_id": identifier if chip_identifier == "phy-id" else None,
+                                "device_id": identifier if chip_identifier == "device" else None,
+                                "aicore_percent": utilization,
+                                "memory": memory(values.get("Memory-Usage(MB)", "")),
+                                "hbm": memory(values.get("HBM-Usage(MB)", ""))})
+                pending = None
             continue
         match = re.fullmatch(r"(\d+)\s+(\S.*)", cells[0])
         if match and top_headers:
+            incomplete += pending is not None
             values = metric_values(cells[-1], top_headers)
             pending = {"npu_id": int(match.group(1)), "name": match.group(2).strip(),
                        "health": cells[1], "power_w": number(values.get("Power(W)", "")),
                        "temperature_c": number(values.get("Temp(C)", ""))}
             continue
-        if pending and re.fullmatch(r"\d+", cells[0]) and bottom_headers:
-            values = metric_values(cells[-1], bottom_headers)
-            utilization = number(values.get("AICore(%)", ""))
-            if utilization is not None and not 0 <= utilization <= 100:
-                utilization = None
-            devices.append({**pending, "chip_id": int(cells[0]), "bus_id": cells[1],
-                            "aicore_percent": utilization,
-                            "memory": memory(values.get("Memory-Usage(MB)", "")),
-                            "hbm": memory(values.get("HBM-Usage(MB)", ""))})
-            pending = None
-    warning = None if devices else "未识别到 NPU 表格，请查看原始输出。"
+    incomplete += pending is not None
+    warning = "未识别到 NPU 表格，请查看原始输出。" if not devices else (
+        f"有 {incomplete} 条 NPU / die 信息未完整解析，请查看原始输出。" if incomplete else None)
     return {"version": version, "devices": devices, "processes": processes, "warning": warning}

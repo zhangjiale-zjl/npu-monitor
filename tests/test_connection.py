@@ -58,7 +58,7 @@ class ConnectionTests(unittest.TestCase):
         self.assertTrue(result["ssh_ok"])
         self.assertTrue(result["npu_ok"])
         self.assertFalse(result["reused_connection"])
-        self.assertEqual(result["status"], "warning")  # Fixture has one Critical card.
+        self.assertEqual(result["status"], "warning")  # Fixture has one Critical die.
         self.assertIn("8", result["message"])
         self.assertIn("1 个 Health 非 OK", result["message"])
         self.assertEqual(self.monitor.config, before)
@@ -67,6 +67,13 @@ class ConnectionTests(unittest.TestCase):
         self.assertFalse(self.monitor.workers)
         self.assertFalse(self.monitor.test_sessions)
         self.assertIsNotNone(self.processes[0].poll())
+
+    def test_a3_connection_reports_cards_and_dies_separately(self):
+        self.mode = "a3"
+        result = self.probe()
+        self.assertTrue(result["npu_ok"])
+        self.assertIn("8 张 NPU 卡、16 个 die", result["message"])
+        self.assertIn("1 个 Health 非 OK", result["message"])
 
     def test_existing_session_is_reused_without_changing_history(self):
         config = validate_config({"nodes": [{"host": "test-node"}]}, self.base)

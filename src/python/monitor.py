@@ -405,14 +405,18 @@ class SSHSession:
 
 
 def demo_output(index, tick):
+    dual_die = index == 1
     rows = ["| npu-smi TEST.DEMO Version: TEST.DEMO |",
             "| NPU Name | Health | Power(W) Temp(C) Hugepages-Usage(page) |",
-            "| Chip | Bus-Id | AICore(%) Memory-Usage(MB) HBM-Usage(MB) |"]
-    for chip in range(8):
+            f"| {'Chip Phy-ID' if dual_die else 'Chip'} | Bus-Id | AICore(%) Memory-Usage(MB) HBM-Usage(MB) |"]
+    for chip in range(16 if dual_die else 8):
         util = int((math.sin(tick / 3 + chip) + 1) * 14 + 48) if index == 0 else (4 if chip < 2 else 0)
         used = (36000 + chip * 760) if index == 0 else (640 if chip < 2 else 0)
-        rows += [f"| {chip} DemoNPU | OK | {165 + util * .8:.1f} {42 + util // 9} 0 / 0 |",
-                 f"| 0 | 0000:{chip + 32:02x}:00.0 | {util} 1420 / 15137 {used} / 65536 |"]
+        npu_id = chip // 2 if dual_die else chip
+        ids = f"{chip % 2} {chip}" if dual_die else "0"
+        power = "-" if dual_die and chip % 2 else f"{165 + util * .8:.1f}"
+        rows += [f"| {npu_id} DemoNPU | OK | {power} {42 + util // 9} 0 / 0 |",
+                 f"| {ids} | 0000:{chip + 32:02x}:00.0 | {util} 1420 / 15137 {used} / 65536 |"]
     rows.append("| NPU Chip Process ID Process name Process memory(MB) |")
     if index == 0:
         rows += [f"| {chip} 0 {32000 + chip} python {35500 + chip * 760} |" for chip in range(8)]
@@ -633,7 +637,8 @@ class Monitor:
                     parsed = parse_info(raw)
                     devices = parsed["devices"]
                     unhealthy = sum(device["health"] != "OK" for device in devices)
-                    message = f"SSH 连接成功 · 已读取 {len(devices)} 个 NPU / 芯片"
+                    cards = len({device["npu_id"] for device in devices})
+                    message = f"SSH 连接成功 · 已读取 {cards} 张 NPU 卡、{len(devices)} 个 die"
                     if unhealthy:
                         message += f" · {unhealthy} 个 Health 非 OK"
                     if parsed["warning"]:
