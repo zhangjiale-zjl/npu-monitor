@@ -9,6 +9,9 @@ mode = sys.argv[1]
 raw = (Path(__file__).parent / "fixtures" / "npu-smi-synthetic.txt").read_text(encoding="utf-8")
 if mode == "a3":
     raw = (Path(__file__).parent / "fixtures" / "npu-smi-a3-synthetic.txt").read_text(encoding="utf-8")
+if mode == "password-host-changed":
+    print("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.", flush=True)
+    raise SystemExit(255)
 if mode.startswith("password"):
     reply = subprocess.run([os.environ["SSH_ASKPASS"], "example-user@host's password:"], capture_output=True)
     expected = "  密码$'`\\; abc  " if mode == "password-ok" else "different-password"

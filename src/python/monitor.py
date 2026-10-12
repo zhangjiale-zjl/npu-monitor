@@ -251,7 +251,9 @@ class SSHSession:
             "printf '\\n%s END %s\\n' \"$request\" \"$rc\";; "
             "*) exit 2;; esac; done"
         )
-        args = [self.ssh, "-T", "-o", "BatchMode=" + ("no" if self.node.auth_type == "password" else "yes"), "-o", "StrictHostKeyChecking=yes",
+        host_key_checking = "accept-new" if self.node.auth_type == "password" else "yes"
+        args = [self.ssh, "-T", "-o", "BatchMode=" + ("no" if self.node.auth_type == "password" else "yes"),
+                "-o", "StrictHostKeyChecking=" + host_key_checking,
                 "-o", f"ConnectTimeout={max(1, math.ceil(self.timeout))}",
                 "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=5",
                 "-o", "ServerAliveCountMax=2", "-o", "LogLevel=ERROR",

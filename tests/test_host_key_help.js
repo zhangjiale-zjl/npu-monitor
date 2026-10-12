@@ -11,12 +11,15 @@ vm.runInContext(source.slice(source.indexOf("function sshHostKeyHelp("), source.
 
 const unknown = "No ED25519 host key is known for 127.0.0.1 and you have requested strict checking.\nHost key verification failed.";
 let help = context.sshHostKeyHelp(unknown, {host: "synthetic-alias", user: "synthetic-user", port: 2222,
-  auth_type: "password", password: "synthetic-secret"});
+  auth_type: "key", password: "synthetic-secret"});
 assert.match(help.summary, /尚未登记/);
 assert.match(help.instruction, /同一账号/);
 assert.equal(help.command, "ssh -o StrictHostKeyChecking=ask -p 2222 -l synthetic-user synthetic-alias");
 assert.equal(JSON.stringify(help).includes("synthetic-secret"), false);
 assert.equal(context.sshHostKeyHelp(unknown).command, "ssh -o StrictHostKeyChecking=ask -p 22 -l root 节点地址");
+help = context.sshHostKeyHelp(unknown, {auth_type: "password"});
+assert.match(help.instruction, /首次自动登记/);
+assert.equal(help.command, undefined);
 help = context.sshHostKeyHelp("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.");
 assert.match(help.summary, /不一致/);
 assert.equal(help.command, undefined);

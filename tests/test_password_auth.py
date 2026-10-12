@@ -101,13 +101,56 @@ class PasswordTests(unittest.TestCase):
             args, env = calls[0]
             self.assertIn("BatchMode=no", args)
             self.assertIn("PreferredAuthentications=password", args)
-            self.assertIn("StrictHostKeyChecking=yes", args)
+            self.assertIn("StrictHostKeyChecking=accept-new", args)
             self.assertIn("PubkeyAuthentication=no", args)
             self.assertNotIn("unused-key", args)
             self.assertNotIn(PASSWORD, " ".join(args))
             self.assertNotIn(PASSWORD, env.values())
             self.assertIsNone(session.broker)
             self.assertNotIn(PASSWORD, repr(session.node))
+        finally:
+            session.close()
+
+    def test_native_ssh_accepts_password_first_contact_policy(self):
+        if not shutil.which("ssh"):
+            self.skipTest("OpenSSH is unavailable")
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
+            config = Path(temporary) / "empty-ssh-config"
+            config.write_text("", encoding="utf-8")
+            result = subprocess.run(["ssh", "-G", "-F", str(config), "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no", "synthetic-host"],
+                capture_output=True, timeout=5,
+                **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            effective = dict(line.split(" ", 1) for line in result.stdout.decode().splitlines() if " " in line)
+            self.assertEqual(effective["stricthostkeychecking"], "accept-new")
+            self.assertEqual(effective["preferredauthentications"], "password")
+            self.assertEqual(effective["pubkeyauthentication"], "false")
+
+    def test_changed_host_key_closes_password_broker_without_reading_password(self):
+        helper_path()
+        original = subprocess.Popen
+        brokers = []
+        def spawn(args, **kwargs):
+            kwargs.pop("creationflags", None)
+            return original([sys.executable, str(TESTS / "fake_ssh.py"), "password-host-changed"], **kwargs)
+        def broker(password):
+            instance = PasswordBroker(password)
+            brokers.append(instance)
+            return instance
+        session = SSHSession(Node("host", auth_type="password", password=PASSWORD), "", 3)
+        try:
+            with patch("monitor.subprocess.Popen", side_effect=spawn), patch("monitor.PasswordBroker", side_effect=broker):
+                with self.assertRaises(CollectionError) as context:
+                    session.query()
+            self.assertIn("REMOTE HOST IDENTIFICATION HAS CHANGED", str(context.exception))
+            self.assertEqual(context.exception.exit_code, 255)
+            self.assertFalse(context.exception.ssh_connected)
+            self.assertEqual(len(brokers), 1)
+            self.assertFalse(brokers[0].used)
+            self.assertEqual(brokers[0].password, "")
+            self.assertIsNone(session.broker)
+            self.assertIsNone(session.process)
         finally:
             session.close()
 

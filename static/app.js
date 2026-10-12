@@ -308,6 +308,10 @@ function sshHostKeyHelp(message, node = {}) {
       instruction: "请向节点管理员核对服务器指纹，并更新该节点的本机记录后重试。"};
   }
   if (/No \S+ host key is known for .*strict checking/i.test(message)) {
+    if (node.auth_type === "password") {
+      return {summary: "SSH 主机指纹验证未通过。",
+        instruction: "密码登录支持首次自动登记指纹。请重启更新后的本地服务再试；仍出现此错误时，检查 SSH 配置中的跳板机指纹设置。"};
+    }
     const host = node.host || "节点地址";
     const user = node.user || "root";
     const port = node.port || 22;

@@ -106,7 +106,7 @@ Host example-npu
 
 看板填写地址 `example-npu` 并选择密钥登录后，用户名和端口留空时使用 `root`、`22`，私钥留空时沿用匹配的 SSH 配置。配置以传给 SSH 的地址或别名匹配 `Host`，填写别名时需使用对应的别名。Linux / macOS 将示例私钥路径换为该系统中的实际路径。迁移环境时需要在新环境配置 SSH 私钥或填写实际私钥路径，仓库不携带个人 SSH 配置或密钥。
 
-`auth_type` 为 `password` 时，将 SSH 登录密码填写在节点的 `password` 字段或看板的“节点密码”输入框。该模式只使用密码认证，私钥字段不参与连接，服务器需允许 SSH 密码登录。每次建立连接尝试一次密码，连接成功后继续复用；密码错误时显示实际认证失败信息。
+`auth_type` 为 `password` 时，将 SSH 登录密码填写在节点的 `password` 字段或看板的“节点密码”输入框。该模式只使用密码认证，私钥字段不参与连接，服务器需允许 SSH 密码登录。首次连接新节点时使用 `StrictHostKeyChecking=accept-new` 自动登记服务器指纹，随后直接进行密码认证，无需先手动执行 SSH 或确认指纹。首次连接信任当前地址对应的服务器；后续指纹与本机记录不一致时拒绝连接并提示核对。每次建立连接尝试一次密码，连接成功后继续复用；密码错误时显示实际认证失败信息。
 
 密码**以明文保存在本机配置文件**，输入框显示为密码掩码。网页接口和 `--once` 输出不返回密码，只返回 `password_set` 标记；重新编辑时输入框为空，留空保留已存密码，填写新密码则替换，切换密钥登录会清除已存密码。密码不会放入 SSH 命令行或环境变量，辅助程序通过一次性本机回环接口读取它，两种认证方式均校验服务器指纹。辅助接口不使用系统代理，也不访问公网。
 
@@ -137,7 +137,7 @@ Host example-npu
 
 支持 IP、主机名和 `~/.ssh/config` 的 Host 别名，包括配置中的跳板机。相对私钥路径以配置文件所在目录为基准。最多监控 64 个节点。
 
-首次连接的新节点需要在运行工具的同一台机器、同一账号下核对服务器指纹并录入本机 SSH 主机指纹记录；工具启用 `StrictHostKeyChecking=yes`。
+密码登录首次连接自动登记新指纹；密钥登录使用 `StrictHostKeyChecking=yes`，新节点需在运行工具的同一台机器、同一账号下核对并登记服务器指纹。两种方式均遵循本机 SSH 主机指纹记录的路径配置。
 
 ## 命令行
 
@@ -173,7 +173,7 @@ python src/python/monitor.py --no-browser --port 8766
 
 - `Permission denied (publickey)`：检查用户名、私钥和节点的公钥配置。
 - `Permission denied (password)`：检查用户名、节点密码，以及服务器是否允许该账号使用 SSH 密码登录。
-- `No ED25519 host key is known ... strict checking`：该节点的主机指纹尚未登记，SSH 尚未进入密码或密钥认证阶段。界面显示该节点的首次连接命令。
+- `No ED25519 host key is known ... strict checking`：密钥登录时，界面显示登记该节点指纹的首次连接命令。密码登录首次连接自动登记；仍报此错误时，重启更新后的本地服务，并检查 SSH 跳板机的指纹设置。
 - `REMOTE HOST IDENTIFICATION HAS CHANGED`：服务器指纹与本机记录不一致，请向节点管理员核对并更新该节点记录。
 - `Host key verification failed`：查看原始错误，核对服务器指纹及本机 SSH 主机指纹记录。
 - 返回码 `127`：宿主机上未找到 `npu-smi` 命令，请检查昇腾驱动安装及 SSH 环境的 PATH。
@@ -182,13 +182,13 @@ python src/python/monitor.py --no-browser --port 8766
 
 工具通过 SSH 在节点宿主机直接执行固定的 `npu-smi info` 命令及型号查询命令，自动补充常见驱动工具目录到 PATH。节点配置只需填写连接和认证信息。
 
-对于尚未登记指纹的节点，在运行工具的同一台机器、同一账号下执行下面的命令，核对服务器指纹后输入 `yes`，再回看板测试连接。替换实际地址；非默认用户名、端口填写实际值：
+密钥登录连接尚未登记指纹的新节点时，在运行工具的同一台机器、同一账号下执行下面的命令，核对服务器指纹后输入 `yes`，再回看板测试连接。替换实际地址；非默认用户名、端口填写实际值：
 
 ```bash
 ssh -o StrictHostKeyChecking=ask -p 22 -l root 节点地址
 ```
 
-`ask` 在确认后登记新指纹，并拒绝已有指纹发生变化的连接，见 [OpenSSH 官方说明](https://man.openbsd.org/ssh_config#StrictHostKeyChecking)。
+`accept-new` 自动登记首次连接的新指纹，`ask` 在确认后登记新指纹；两者均拒绝已有指纹发生变化的连接，见 [OpenSSH 官方说明](https://man.openbsd.org/ssh_config#StrictHostKeyChecking)。
 
 ## 验证
 
