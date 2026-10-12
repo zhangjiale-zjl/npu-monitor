@@ -11,7 +11,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+SOURCE = Path(__file__).resolve().parents[1] / "src" / "python"
+sys.path.insert(0, str(SOURCE))
 from monitor import CollectionError, DashboardServer, Monitor, Node, SSHSession, validate_config
 from password_auth import PasswordBroker, helper_path
 
@@ -72,7 +73,7 @@ class PasswordTests(unittest.TestCase):
         try:
             env = {**os.environ, **broker.start(), "http_proxy": "http://127.0.0.1:9",
                    "HTTP_PROXY": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
-            helper = TESTS.parent / "helpers" / "askpass.py"
+            helper = SOURCE / "askpass.py"
             result = subprocess.run([sys.executable, str(helper), "example-user@host's password:"],
                                     env=env, capture_output=True, timeout=5)
             self.assertEqual(result.returncode, 0)

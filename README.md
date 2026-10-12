@@ -4,22 +4,46 @@
 
 看板仅监听 `127.0.0.1`，网页资源全部随工具提供。采集通过 SSH 连接指定节点，因此本机需能访问这些节点的 SSH 端口。支持 Windows、Linux 和 macOS；远端需提供 POSIX `sh` 和 `npu-smi`。
 
+## 目录
+
+`src/python` 仅存放 Python 程序源码，启动脚本、网页、配置、辅助资源和测试位于仓库根目录下的对应位置。
+
+```text
+npu-monitor/
+├── start.cmd
+├── start.ps1
+├── README.md
+├── LICENSE
+├── nodes.example.json
+├── helpers/
+├── static/
+├── tests/
+└── src/python/
+    ├── monitor.py
+    ├── npu_parser.py
+    ├── npu_platform.py
+    ├── password_auth.py
+    └── askpass.py
+```
+
+节点配置默认保存在仓库根目录的 `nodes.json`。用户配置、截图、采集结果和生成的密码辅助程序均忽略，不进入 Git 仓库。
+
 ## 启动
 
 首次启动显示空看板，可点击“＋ 添加节点”填写自己的连接信息。也可将 `nodes.example.json` 复制为 `nodes.json` 后修改；示例中的地址、用户名和密码均为占位内容。`nodes.json`、采集快照、截图和本机生成的辅助程序不纳入版本控制。
 
-Windows 双击 **`start.cmd`**，自动打开本地看板。启动脚本优先查找已安装的 Python，也支持当前 Codex 自带的 Python。保持启动窗口运行，按 **Ctrl+C** 停止采集并关闭 SSH 连接。
+Windows 双击 **`start.cmd`**，自动打开本地看板。启动脚本优先查找已安装的 Python，也支持当前 Codex 自带的 Python。保持启动窗口运行，按 **Ctrl+C** 停止采集并关闭 SSH 连接。命令行选项可传给 `start.cmd`，例如 `start.cmd --interval 2 --no-browser`；演示模式使用 `start.cmd -Demo`。
 
 也可在终端启动：
 
 ```powershell
-python monitor.py
+python src/python/monitor.py
 ```
 
 Linux / macOS：
 
 ```bash
-python3 monitor.py --config nodes.json
+python3 src/python/monitor.py --config nodes.json
 ```
 
 浏览器地址：`http://127.0.0.1:8765`。端口被占用时使用 `--port 8766` 或 `--port 0` 自动分配。
@@ -71,7 +95,7 @@ dmidecode -s system-product-name
 
 密码**以明文保存在本机配置文件**，输入框显示为密码掩码。网页接口和 `--once` 输出不返回密码，只返回 `password_set` 标记；重新编辑时输入框为空，留空保留已存密码，填写新密码则替换，切换密钥登录会清除已存密码。密码不会放入 SSH 命令行或环境变量，辅助程序通过一次性本机回环接口读取它，两种认证方式均校验服务器指纹。辅助接口不使用系统代理，也不访问公网。
 
-更新工具后，停止启动窗口中的旧服务并重新运行 `start.cmd` 或 `python monitor.py`，即可加载当前功能。Linux / macOS 使用随工具提供的 Python 与 shell 辅助脚本；Windows 首次使用密码登录时，通过系统自带的 .NET Framework 编译器从源码生成辅助程序。
+更新工具后，停止启动窗口中的旧服务并重新运行 `start.cmd` 或 `python src/python/monitor.py`，即可加载当前功能。Linux / macOS 使用随工具提供的 Python 与 shell 辅助脚本；Windows 首次使用密码登录时，通过系统自带的 .NET Framework 编译器从源码生成辅助程序。
 
 示例：
 
@@ -101,22 +125,22 @@ dmidecode -s system-product-name
 
 ```bash
 # 使用指定配置、默认私钥、2 秒采集周期
-python monitor.py --config nodes.json --identity ~/.ssh/id_ed25519 --interval 2
+python src/python/monitor.py --config nodes.json --identity ~/.ssh/id_ed25519 --interval 2
 
 # 追加节点，可重复 --node；用户名留空时使用 SSH 配置
-python monitor.py --node your-user@example-node --node example-alias
+python src/python/monitor.py --node your-user@example-node --node example-alias
 
 # 指定远端 npu-smi 路径和采集总超时
-python monitor.py --npu-smi /usr/local/bin/npu-smi --timeout 20
+python src/python/monitor.py --npu-smi /usr/local/bin/npu-smi --timeout 20
 
 # 完全离线演示：不建立 SSH 连接，也不覆盖正式配置
-python monitor.py --demo
+python src/python/monitor.py --demo
 
 # 单次采集，输出 JSON，不启动网页
-python monitor.py --once
+python src/python/monitor.py --once
 
 # 服务启动时不自动打开浏览器
-python monitor.py --no-browser --port 8766
+python src/python/monitor.py --no-browser --port 8766
 ```
 
 命令行覆盖项作用于本次运行；在看板点击“应用”或“保存配置”时会将当前配置保存到文件。演示模式修改只保留在本次运行的内存中。

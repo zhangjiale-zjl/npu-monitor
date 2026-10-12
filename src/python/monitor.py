@@ -29,7 +29,7 @@ from npu_parser import parse_info
 from npu_platform import detect_platform, server_generation, system_product
 from password_auth import PasswordBroker
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 MAX_OUTPUT = 2 * 1024 * 1024
 MAX_NODES = 64
 HOST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:\-]*$")

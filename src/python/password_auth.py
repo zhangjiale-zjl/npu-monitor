@@ -9,7 +9,8 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HELPERS = Path(__file__).resolve().parent / "helpers"
+SOURCE = Path(__file__).resolve().parent
+HELPERS = SOURCE.parents[1] / "helpers"
 BUILD_LOCK = threading.Lock()
 
 
@@ -90,7 +91,7 @@ class PasswordBroker:
                 "NPU_MONITOR_ASKPASS_PORT": str(self.server.server_port),
                 "NPU_MONITOR_ASKPASS_TOKEN": self.token,
                 "NPU_MONITOR_PYTHON": sys.executable,
-                "NPU_MONITOR_ASKPASS_SCRIPT": str(HELPERS / "askpass.py")}
+                "NPU_MONITOR_ASKPASS_SCRIPT": str(SOURCE / "askpass.py")}
 
     def close(self):
         if self.server:
