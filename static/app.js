@@ -10,21 +10,53 @@ const detailsOpen = new Set();
 let directorySignature = "";
 let selectedModel = null;
 let directoryCollapsed = false;
+let directoryHovered = false;
+let directoryFocused = false;
+const directoryHoverMedia = window.matchMedia("(min-width: 761px) and (hover: hover) and (pointer: fine)");
 try { directoryCollapsed = localStorage.getItem("npu-monitor-directory-collapsed") === "true"; } catch (_) {}
 
 function applyDirectoryState() {
+  const floating = directoryCollapsed && directoryHoverMedia.matches && (directoryHovered || directoryFocused);
   $("model-sidebar").classList.toggle("collapsed", directoryCollapsed);
-  $("model-directory-content").hidden = directoryCollapsed;
+  $("model-sidebar").classList.toggle("floating-open", floating);
+  $("model-directory-content").hidden = directoryCollapsed && !floating;
+  $("directory-hover-hint").hidden = !floating;
   const toggle = $("sidebar-toggle");
-  toggle.setAttribute("aria-expanded", String(!directoryCollapsed));
-  toggle.setAttribute("aria-label", directoryCollapsed ? "展开机型目录" : "收起机型目录");
-  toggle.title = directoryCollapsed ? "展开机型目录" : "收起机型目录";
-  toggle.querySelector("span").textContent = directoryCollapsed ? "›" : "‹";
+  const label = floating ? "固定展开机型目录" : directoryCollapsed ? "展开机型目录" : "收起机型目录";
+  toggle.setAttribute("aria-expanded", String(!directoryCollapsed || floating));
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+  toggle.querySelector("span").textContent = floating ? "固定" : directoryCollapsed ? "›" : "‹";
 }
 
 $("sidebar-toggle").addEventListener("click", () => {
   directoryCollapsed = !directoryCollapsed;
+  directoryHovered = false;
+  directoryFocused = false;
   try { localStorage.setItem("npu-monitor-directory-collapsed", String(directoryCollapsed)); } catch (_) {}
+  applyDirectoryState();
+});
+$("model-sidebar").addEventListener("pointerenter", event => {
+  if (event.pointerType !== "mouse" || !directoryHoverMedia.matches) return;
+  directoryHovered = true;
+  applyDirectoryState();
+});
+$("model-sidebar").addEventListener("pointerleave", () => {
+  directoryHovered = false;
+  applyDirectoryState();
+});
+$("model-sidebar").addEventListener("focusin", event => {
+  directoryFocused = event.target.matches(":focus-visible");
+  applyDirectoryState();
+});
+$("model-sidebar").addEventListener("focusout", event => {
+  if ($("model-sidebar").contains(event.relatedTarget)) return;
+  directoryFocused = false;
+  applyDirectoryState();
+});
+directoryHoverMedia.addEventListener("change", () => {
+  directoryHovered = false;
+  directoryFocused = false;
   applyDirectoryState();
 });
 applyDirectoryState();
