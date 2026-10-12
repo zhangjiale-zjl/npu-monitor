@@ -302,6 +302,26 @@ function detail(nodeName, key, label) {
   return element;
 }
 
+function sshHostKeyHelp(message, node = {}) {
+  if (/REMOTE HOST IDENTIFICATION HAS CHANGED|Offending .* key in/i.test(message)) {
+    return {summary: "SSH 主机指纹与本机记录不一致。",
+      instruction: "请向节点管理员核对服务器指纹，并更新该节点的本机记录后重试。"};
+  }
+  if (/No \S+ host key is known for .*strict checking/i.test(message)) {
+    const host = node.host || "节点地址";
+    const user = node.user || "root";
+    const port = node.port || 22;
+    return {summary: "SSH 主机指纹尚未登记，连接尚未进入认证阶段。",
+      instruction: "在运行工具的同一台机器、同一账号下执行下方命令，核对服务器指纹后输入 yes，再返回测试连接。",
+      command: `ssh -o StrictHostKeyChecking=ask -p ${port} -l ${user} ${host}`};
+  }
+  if (/Host key verification failed/i.test(message)) {
+    return {summary: "SSH 主机指纹验证失败。",
+      instruction: "请检查原始错误，核对该节点的服务器指纹及本机 SSH 主机指纹记录。"};
+  }
+  return null;
+}
+
 function nodeCard(node) {
   const card = el("article", "node-card");
   const head = el("div", "node-head");
@@ -324,11 +344,16 @@ function nodeCard(node) {
   const body = el("div", "node-body");
   if (node.error || node.warning) {
     const message = node.error || node.warning;
-    const summary = /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/.test(message) ? "SSH 主机指纹不匹配，请核对该节点的服务器指纹。" : message;
+    const hostKey = sshHostKeyHelp(message, config || node);
+    const summary = hostKey?.summary || message;
     const alert = el("div", "node-alert" + (node.error ? " error" : ""));
     const text = el("div", "alert-message", summary);
     text.title = message;
     alert.append(text);
+    if (hostKey) {
+      alert.append(el("p", "ssh-host-key-help", hostKey.instruction));
+      if (hostKey.command) alert.append(el("code", "ssh-host-key-command", hostKey.command));
+    }
     alert.append(el("small", "", `返回码：${node.exit_code == null ? "未取得" : node.exit_code} · 最近成功：${timeText(node.last_success_at)}`));
     body.append(alert);
   } else if (!node.devices.length) {
@@ -742,12 +767,15 @@ async function testConfigNode(fieldset) {
     if (invalid) { invalid.reportValidity(); throw new Error("请检查该节点的连接信息和采集超时。"); }
     if (!state.connection_test_supported) throw new Error("请重新启动更新后的监控工具，再测试连接。");
     const timeout = Number($("timeout").value);
-    const response = await api("/api/test-connection", {node: configNodeValue(fieldset),
+    const node = configNodeValue(fieldset);
+    const response = await api("/api/test-connection", {node,
       identity_file: $("default-key").value.trim(), timeout}, (timeout + 30) * 1000);
     if (!fieldset.isConnected || fieldset.dataset.testVersion !== version) return;
     result.className = "node-test-result " + response.status;
-    result.textContent = response.message + (response.status === "error" && response.exit_code != null ? ` · 返回码 ${response.exit_code}` : "")
+    const hostKey = response.status === "error" ? sshHostKeyHelp(response.detail || "", node) : null;
+    result.textContent = (hostKey?.summary || response.message) + (response.status === "error" && response.exit_code != null ? ` · 返回码 ${response.exit_code}` : "")
       + (response.duration_ms == null ? "" : ` · ${fmt(response.duration_ms / 1000, 1)} 秒`)
+      + (hostKey ? `\n${hostKey.instruction}` + (hostKey.command ? `\n${hostKey.command}` : "") : "")
       + (response.detail ? `\n${response.detail}` : "");
   } catch (error) {
     if (fieldset.isConnected && fieldset.dataset.testVersion === version) {

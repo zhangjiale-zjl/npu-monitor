@@ -137,7 +137,7 @@ Host example-npu
 
 支持 IP、主机名和 `~/.ssh/config` 的 Host 别名，包括配置中的跳板机。相对私钥路径以配置文件所在目录为基准。最多监控 64 个节点。
 
-首次连接的新节点需要先使用普通 `ssh` 核对服务器指纹并录入本机 `known_hosts`；工具启用 `StrictHostKeyChecking=yes`。
+首次连接的新节点需要在运行工具的同一台机器、同一账号下核对服务器指纹并录入本机 SSH 主机指纹记录；工具启用 `StrictHostKeyChecking=yes`。
 
 ## 命令行
 
@@ -173,12 +173,22 @@ python src/python/monitor.py --no-browser --port 8766
 
 - `Permission denied (publickey)`：检查用户名、私钥和节点的公钥配置。
 - `Permission denied (password)`：检查用户名、节点密码，以及服务器是否允许该账号使用 SSH 密码登录。
-- `Host key verification failed`：先通过普通 SSH 核对服务器指纹。
+- `No ED25519 host key is known ... strict checking`：该节点的主机指纹尚未登记，SSH 尚未进入密码或密钥认证阶段。界面显示该节点的首次连接命令。
+- `REMOTE HOST IDENTIFICATION HAS CHANGED`：服务器指纹与本机记录不一致，请向节点管理员核对并更新该节点记录。
+- `Host key verification failed`：查看原始错误，核对服务器指纹及本机 SSH 主机指纹记录。
 - 返回码 `127`：宿主机上未找到 `npu-smi` 命令，请检查昇腾驱动安装及 SSH 环境的 PATH。
 - 超时：检查节点连通性或增大“采集超时”。
 - 输出未识别：原始输出仍可查看；解析器支持常见双行 NPU 表格和带可选容器 PID 的进程表。
 
 工具通过 SSH 在节点宿主机直接执行固定的 `npu-smi info` 命令及型号查询命令，自动补充常见驱动工具目录到 PATH。节点配置只需填写连接和认证信息。
+
+对于尚未登记指纹的节点，在运行工具的同一台机器、同一账号下执行下面的命令，核对服务器指纹后输入 `yes`，再回看板测试连接。替换实际地址；非默认用户名、端口填写实际值：
+
+```bash
+ssh -o StrictHostKeyChecking=ask -p 22 -l root 节点地址
+```
+
+`ask` 在确认后登记新指纹，并拒绝已有指纹发生变化的连接，见 [OpenSSH 官方说明](https://man.openbsd.org/ssh_config#StrictHostKeyChecking)。
 
 ## 验证
 
@@ -186,11 +196,12 @@ python src/python/monitor.py --no-browser --port 8766
 python -m unittest discover -s tests -v
 ```
 
-前端排序与目录自动保存可使用 Node.js 单独验证（运行看板不需要 Node.js）：
+前端排序、目录自动保存与 SSH 指纹提示可使用 Node.js 单独验证（运行看板不需要 Node.js）：
 
 ```bash
 node tests/test_node_sort.js
 node tests/test_directory_sort.js
+node tests/test_host_key_help.js
 ```
 
 测试使用完全合成的 `npu-smi` 双行表格，覆盖设备、健康状态、进程与容器 PID、无 HBM 表格、未知指标、密钥路径和配置校验、地址与 SSH 别名去重、自动命名、A2/A3/A5 型号识别、服务器型号与只读回退、型号查询缓存及故障隔离、两种认证方式下的 SSH 会话复用、密码错误、密码保留与替换、切换密钥时清除密码、网页接口不返回密码、未保存节点的连接测试、测试与采集并发复用、SSH 连接与 NPU 命令故障区分、测试不修改配置与历史、断线重连、超时恢复、输出上限、暂停和动态周期、节点故障隔离及本地接口访问约束。原生 OpenSSH 密码辅助测试使用临时加密测试密钥，传输测试使用本地模拟子进程，HTTP 测试只连接本机；测试凭据均为合成数据，不会登录真实节点。
