@@ -561,10 +561,58 @@ async function testConfigNode(fieldset) {
 }
 
 for (const id of ["default-key", "timeout"]) $(id).addEventListener("input", () => {
-  $("config-nodes").querySelectorAll("fieldset").forEach(clearConnectionTest);
+  $("config-nodes").querySelectorAll(".config-node").forEach(clearConnectionTest);
 });
 
-function addConfigNode(node = {}) {
+let settingsMode = "manage";
+let configGroups = new Map();
+let configNodeDrag = null;
+
+function announceNodeOrder(row) {
+  const position = [...row.parentElement.children].indexOf(row) + 1;
+  $("config-order-status").textContent = `${row.querySelector(".config-node-name").textContent} 已调整至当前机型第 ${position} 个节点，保存后生效。`;
+}
+
+function finishConfigNodeDrag(event) {
+  if (!configNodeDrag || (event && event.pointerId !== configNodeDrag.pointerId)) return;
+  const {row, list, pointerId, moved} = configNodeDrag;
+  configNodeDrag = null;
+  row.classList.remove("reordering");
+  document.body.classList.remove("node-reordering");
+  if (list.hasPointerCapture(pointerId)) list.releasePointerCapture(pointerId);
+  if (moved && row.isConnected) announceNodeOrder(row);
+}
+
+function configGroup(model) {
+  if (configGroups.has(model)) return configGroups.get(model);
+  const section = el("section", "config-group");
+  section.setAttribute("aria-label", `${model} 节点配置`);
+  const heading = el("div", "config-group-heading");
+  heading.append(el("h3", "", model));
+  const list = el("div", "config-group-nodes");
+  section.append(heading, list);
+  $("config-nodes").append(section);
+  configGroups.set(model, list);
+  list.addEventListener("pointermove", event => {
+    if (!configNodeDrag || event.pointerId !== configNodeDrag.pointerId || configNodeDrag.list !== list) return;
+    const drag = configNodeDrag;
+    if (!drag.moved && Math.abs(event.clientY - drag.startY) < 5) return;
+    drag.moved = true;
+    drag.row.classList.add("reordering");
+    document.body.classList.add("node-reordering");
+    // Keep nodes within their machine model; move the real form to preserve edits and test results.
+    const before = [...list.children].find(row => {
+      if (row === drag.row) return false;
+      const bounds = row.getBoundingClientRect();
+      return event.clientY < bounds.top + bounds.height / 2;
+    });
+    if (before !== drag.row.nextElementSibling) list.insertBefore(drag.row, before || null);
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) list.addEventListener(type, finishConfigNodeDrag);
+  return list;
+}
+
+function addConfigNode(node = {}, {model = "待识别机型", open = true} = {}) {
   const fragment = $("config-node-template").content.cloneNode(true);
   const fieldset = fragment.querySelector("fieldset");
   fieldset.dataset.id = node.id || "";
@@ -581,7 +629,7 @@ function addConfigNode(node = {}) {
     fieldset.querySelector(".password-field").hidden = !byPassword;
     const note = fieldset.querySelector(".auth-note");
     note.hidden = !byPassword && !node.password_set;
-    note.textContent = byPassword ? "密码以明文保存在本机配置文件；留空保留已有密码。"
+    note.textContent = byPassword ? "密码以明文保存在本机配置文件。" + (node.password_set ? "留空保留已有密码。" : "")
       : "保存为密钥登录后，将清除该节点已保存的密码。";
     password.disabled = !byPassword;
     password.required = byPassword && !node.password_set;
@@ -592,42 +640,127 @@ function addConfigNode(node = {}) {
   fieldset.querySelector(".test-node").addEventListener("click", () => testConfigNode(fieldset));
   fieldset.addEventListener("input", () => clearConnectionTest(fieldset));
   fieldset.addEventListener("change", () => clearConnectionTest(fieldset));
-  fieldset.querySelector(".remove-node").addEventListener("click", () => fieldset.remove());
-  $("config-nodes").append(fragment);
+  if (settingsMode === "add") {
+    fieldset.querySelector(".remove-node").hidden = true;
+    $("config-nodes").append(fragment);
+    return fieldset;
+  }
+  const list = configGroup(model);
+  const row = el("div", "config-row");
+  const handle = el("button", "node-order-handle", "⋮⋮");
+  handle.type = "button";
+  handle.title = "拖动调整机型内顺序；↑↓调整顺序";
+  handle.setAttribute("aria-label", `调整节点 ${node.name || "新节点"} 的顺序`);
+  const entry = el("details", "config-entry");
+  const summary = el("summary", "config-node-name", node.name || "新节点");
+  entry.append(summary, fragment);
+  entry.open = open;
+  row.append(handle, entry);
+  list.append(row);
+  $("config-empty").hidden = true;
+  fieldset.addEventListener("input", () => {
+    if (!node.id) summary.textContent = fieldset.querySelector('[data-field="host"]').value.trim() || "新节点";
+  });
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || configNodeDrag || $("save-config").disabled) return;
+    event.preventDefault();
+    configNodeDrag = {row, list, pointerId: event.pointerId, startY: event.clientY, moved: false};
+    list.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener("keydown", event => {
+    if ($("save-config").disabled) return;
+    if (event.key === "ArrowUp" && row.previousElementSibling) {
+      event.preventDefault(); list.insertBefore(row, row.previousElementSibling);
+    } else if (event.key === "ArrowDown" && row.nextElementSibling) {
+      event.preventDefault(); list.insertBefore(row.nextElementSibling, row);
+    } else return;
+    handle.focus();
+    announceNodeOrder(row);
+  });
+  fieldset.querySelector(".remove-node").addEventListener("click", () => {
+    finishConfigNodeDrag();
+    row.remove();
+    if (!list.children.length) { list.parentElement.remove(); configGroups.delete(model); }
+    $("config-empty").hidden = !!$("config-nodes").querySelector(".config-node");
+  });
   return fieldset;
 }
 
 function openSettings({add = false, id = null} = {}) {
   if (!state) { notify("请先启动本地服务。", true); return; }
+  finishConfigNodeDrag();
+  settingsMode = add ? "add" : "manage";
+  configGroups = new Map();
+  $("settings-title").textContent = add ? "添加节点" : "管理节点";
+  $("settings-description").textContent = add ? "填写连接信息，可先测试连接再添加。"
+    : "按机型管理，点击名称展开编辑；拖动左侧滑块排序后保存生效。";
+  $("config-nodes-title").textContent = add ? "节点信息" : "监控节点";
+  $("add-node").hidden = add;
+  $("connection-defaults").hidden = add;
+  $("connection-defaults").open = false;
+  $("save-config").textContent = add ? "添加节点" : "保存配置";
   $("default-key").value = state.config.identity_file;
   $("timeout").value = state.config.timeout;
   $("config-nodes").replaceChildren();
-  state.config.nodes.forEach(addConfigNode);
   let target;
-  if (add || !state.config.nodes.length) target = addConfigNode();
-  if (id) target = [...$("config-nodes").querySelectorAll("fieldset")].find(fieldset => fieldset.dataset.id === id);
+  if (add) target = addConfigNode();
+  else {
+    const config = new Map(state.config.nodes.map(node => [node.id, node]));
+    for (const [model, nodes] of modelGroups(state.nodes)) for (const node of nodes) {
+      const fieldset = addConfigNode(config.get(node.id), {model, open: node.id === id});
+      if (node.id === id) target = fieldset;
+    }
+  }
+  $("config-empty").hidden = add || state.config.nodes.length > 0;
+  $("config-order-status").textContent = "";
   $("config-error").hidden = true;
   $("config-note").textContent = state.demo ? "演示模式：配置不写入文件" : "保存到启动时指定的配置文件";
   $("settings-dialog").showModal();
-  if (target) target.querySelector('[data-field="host"]').focus();
+  if (target) {
+    target.scrollIntoView({block: "nearest"});
+    target.querySelector('[data-field="host"]').focus();
+  }
 }
 
 $("settings").addEventListener("click", () => openSettings());
 $("new-node").addEventListener("click", () => openSettings({add: true}));
 $("empty-settings").addEventListener("click", () => openSettings({add: true}));
 for (const id of ["close-settings", "cancel-settings"]) $(id).addEventListener("click", () => $("settings-dialog").close());
-$("add-node").addEventListener("click", () => addConfigNode());
+$("add-node").addEventListener("click", () => {
+  const fieldset = addConfigNode();
+  fieldset.scrollIntoView({block: "nearest"});
+  fieldset.querySelector('[data-field="host"]').focus();
+});
+$("settings-dialog").addEventListener("close", () => {
+  finishConfigNodeDrag();
+  $("config-nodes").replaceChildren();
+  configGroups.clear();
+});
+window.addEventListener("blur", () => finishConfigNodeDrag());
 
 $("config-form").addEventListener("submit", async event => {
   event.preventDefault();
-  const nodes = [...$("config-nodes").querySelectorAll("fieldset")].map(configNodeValue);
+  if ($("save-config").disabled) return;
+  const inputs = [...$("config-nodes").querySelectorAll("[data-field]:not(:disabled)")];
+  if (settingsMode === "manage") inputs.push($("timeout"));
+  const invalid = inputs.find(input => !input.checkValidity());
+  if (invalid) {
+    const details = invalid.closest("details");
+    if (details) details.open = true;
+    invalid.scrollIntoView({block: "nearest"});
+    invalid.reportValidity();
+    return;
+  }
+  const draftNodes = [...$("config-nodes").querySelectorAll(".config-node")].map(configNodeValue);
+  const nodes = settingsMode === "add" ? [...state.config.nodes, ...draftNodes] : draftNodes;
   $("save-config").disabled = true;
   try {
     if (nodes.some(node => node.auth_type === "password") && !state.auth_password_supported) {
       throw new Error("请重新启动更新后的监控工具，再使用密码登录。");
     }
     if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
-    const saved = await api("/api/config", {...state.config, timeout: Number($("timeout").value), identity_file: $("default-key").value.trim(), nodes});
+    const defaults = settingsMode === "add" ? {} : {timeout: Number($("timeout").value), identity_file: $("default-key").value.trim()};
+    const saved = await api("/api/config", {...state.config, ...defaults, nodes});
     $("settings-dialog").close();
     const merged = saved.duplicates_removed ? ` 已合并 ${saved.duplicates_removed} 个重复节点，保留首次配置。` : "";
     notify((state.demo ? "演示配置已应用。" : "节点配置已保存。") + merged);

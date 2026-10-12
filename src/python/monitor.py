@@ -405,7 +405,7 @@ class SSHSession:
 
 
 def demo_output(index, tick):
-    dual_die = index == 1
+    dual_die = index % 3 == 1
     rows = ["| npu-smi TEST.DEMO Version: TEST.DEMO |",
             "| NPU Name | Health | Power(W) Temp(C) Hugepages-Usage(page) |",
             f"| {'Chip Phy-ID' if dual_die else 'Chip'} | Bus-Id | AICore(%) Memory-Usage(MB) HBM-Usage(MB) |"]
@@ -431,6 +431,7 @@ class Worker:
         self.stop_event, self.wake = threading.Event(), threading.Event()
         self.thread = threading.Thread(target=self.run, name=f"npu-{node.id}", daemon=True)
         self.tick = 0
+        self.demo_index = None
         self.next_platform_query = 0
         self.next_system_query = 0
         self.platform_generation = -1
@@ -462,7 +463,9 @@ class Worker:
             result = {}
             try:
                 if self.monitor.demo:
-                    index = list(self.monitor.workers).index(self.node.id)
+                    if self.demo_index is None:
+                        self.demo_index = list(self.monitor.workers).index(self.node.id)
+                    index = self.demo_index
                     raw, rc = demo_output(index, self.tick), 0
                     self.tick += 1
                 else:
@@ -572,7 +575,9 @@ class Monitor:
                     signature = (node, identity, config["timeout"])
                     worker = old.get(node.id)
                     if not worker or worker.signature != signature:
+                        demo_index = worker.demo_index if worker and self.demo else None
                         worker = Worker(self, node, identity, config["timeout"], self.ssh)
+                        worker.demo_index = demo_index
                         created.append(worker)
                     new[node.id] = worker
                 self.config, self.workers = config, new

@@ -323,6 +323,66 @@ class WorkerTests(unittest.TestCase):
             finally:
                 monitor.close()
 
+    def test_node_order_is_persisted_without_replacing_existing_workers(self):
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, patch.object(SSHSession, "query", return_value=(FIXTURE, 0)):
+            base = Path(temporary)
+            config = validate_config({"nodes": [{"host": host} for host in ["order-first", "order-second", "order-third"]]}, base)
+            monitor = Monitor(config, base / "nodes.json", once=True)
+            try:
+                for worker in monitor.workers.values():
+                    worker.thread.join(timeout=2)
+                workers = dict(monitor.workers)
+                public = monitor.snapshot()["config"]
+                public["nodes"] = [public["nodes"][2], *public["nodes"][:2]]
+                monitor.reconfigure(validate_config(public, base, config))
+                expected = ["order-third", "order-first", "order-second"]
+                self.assertEqual([node["host"] for node in monitor.snapshot()["nodes"]], expected)
+                self.assertEqual([node["host"] for node in json.loads(monitor.path.read_text())["nodes"]], expected)
+                self.assertTrue(all(monitor.workers[key] is worker for key, worker in workers.items()))
+            finally:
+                monitor.close()
+
+    def test_adding_public_node_config_preserves_existing_password_and_order(self):
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, patch.object(SSHSession, "query", return_value=(FIXTURE, 0)):
+            base = Path(temporary)
+            config = validate_config({"nodes": [{"host": "key-first"},
+                {"host": "password-second", "auth_type": "password", "password": "synthetic-append-password"}]}, base)
+            monitor = Monitor(config, base / "nodes.json", once=True)
+            try:
+                for worker in monitor.workers.values():
+                    worker.thread.join(timeout=2)
+                workers = dict(monitor.workers)
+                public = monitor.snapshot()["config"]
+                self.assertNotIn("password", public["nodes"][1])
+                public["nodes"].append({"host": "added-third"})
+                monitor.reconfigure(validate_config(public, base, config))
+                self.assertEqual([node["host"] for node in monitor.config["nodes"]], ["key-first", "password-second", "added-third"])
+                self.assertEqual(monitor.config["nodes"][1]["password"], "synthetic-append-password")
+                self.assertTrue(all(monitor.workers[key] is worker for key, worker in workers.items()))
+            finally:
+                monitor.close()
+
+    def test_demo_model_and_die_count_are_stable_after_reordering(self):
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
+            config = validate_config({"nodes": [{"host": f"demo-{index}"} for index in range(6)]}, TESTS)
+            monitor = Monitor(config, Path(temporary) / "nodes.json", demo=True)
+            try:
+                wait_until(lambda: all(node["updated_at"] for node in monitor.snapshot()["nodes"]))
+                before = {node["id"]: (node["server_model"], len(node["devices"])) for node in monitor.snapshot()["nodes"]}
+                self.assertEqual(before["demo-4:22"][1], 16)
+                ticks = {key: worker.tick for key, worker in monitor.workers.items()}
+                changed = copy.deepcopy(config)
+                changed["nodes"].reverse()
+                monitor.reconfigure(changed)
+                wait_until(lambda: all(worker.tick > ticks[key] for key, worker in monitor.workers.items()))
+                self.assertEqual({node["id"]: (node["server_model"], len(node["devices"])) for node in monitor.snapshot()["nodes"]}, before)
+                changed["timeout"] = 7
+                monitor.reconfigure(changed)
+                wait_until(lambda: all(node["updated_at"] for node in monitor.snapshot()["nodes"]))
+                self.assertEqual({node["id"]: (node["server_model"], len(node["devices"])) for node in monitor.snapshot()["nodes"]}, before)
+            finally:
+                monitor.close()
+
     def test_automatic_name_and_identity_survive_config_save(self):
         config = validate_config({"interval": 3600, "nodes": [{"host": "demo", "name": "arbitrary"}]}, TESTS)
         with tempfile.TemporaryDirectory(dir=TESTS) as temporary, patch.object(SSHSession, "query", return_value=(FIXTURE, 0)):
