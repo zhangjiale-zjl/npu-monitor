@@ -766,14 +766,16 @@ async function testConfigNode(fieldset) {
   result.className = "node-test-result pending";
   result.textContent = "正在测试 SSH 连接与宿主机 npu-smi info…";
   try {
-    const fields = [...fieldset.querySelectorAll("[data-field]:not(:disabled)"), $("timeout")];
+    const manage = settingsMode === "manage";
+    const fields = [...fieldset.querySelectorAll("[data-field]:not(:disabled)")];
+    if (manage) fields.push($("timeout"));
     const invalid = fields.find(input => !input.checkValidity());
     if (invalid) { invalid.reportValidity(); throw new Error("请检查该节点的连接信息和采集超时。"); }
     if (!state.connection_test_supported) throw new Error("请重新启动更新后的监控工具，再测试连接。");
-    const timeout = Number($("timeout").value);
+    const timeout = manage ? Number($("timeout").value) : state.config.timeout;
     const node = configNodeValue(fieldset);
-    const response = await api("/api/test-connection", {node,
-      identity_file: $("default-key").value.trim(), timeout}, (timeout + 30) * 1000);
+    const defaults = manage ? {identity_file: $("default-key").value.trim(), timeout} : {};
+    const response = await api("/api/test-connection", {node, ...defaults}, (timeout + 30) * 1000);
     if (!fieldset.isConnected || fieldset.dataset.testVersion !== version) return;
     result.className = "node-test-result " + response.status;
     const hostKey = response.status === "error" ? sshHostKeyHelp(response.detail || "", node) : null;
@@ -1060,18 +1062,17 @@ $("config-form").addEventListener("submit", async event => {
     invalid.reportValidity();
     return;
   }
-  const draftNodes = [...$("config-nodes").querySelectorAll(".config-node")].map(configNodeValue);
-  const nodes = settingsMode === "add" ? [...state.config.nodes, ...draftNodes] : draftNodes;
+  const nodes = [...$("config-nodes").querySelectorAll(".config-node")].map(configNodeValue);
   $("save-config").disabled = true;
   try {
     if (nodes.some(node => node.auth_type === "password") && !state.auth_password_supported) {
       throw new Error("请重新启动更新后的监控工具，再使用密码登录。");
     }
     if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
-    const defaults = settingsMode === "add" ? {} : {timeout: Number($("timeout").value), identity_file: $("default-key").value.trim()};
-    const saved = await api("/api/config", {...state.config, ...defaults, nodes,
-      node_order: settingsMode === "add" ? (state.config.node_order || {}) : Object.fromEntries(settingsNodeOrder),
-      model_order: settingsMode === "add" ? (state.config.model_order || []) : settingsModelOrder});
+    const saved = settingsMode === "add" ? await api("/api/nodes", {nodes})
+      : await api("/api/config", {...state.config, nodes, timeout: Number($("timeout").value),
+        identity_file: $("default-key").value.trim(), node_order: Object.fromEntries(settingsNodeOrder),
+        model_order: settingsModelOrder});
     $("settings-dialog").close();
     const merged = saved.duplicates_removed ? ` 已合并 ${saved.duplicates_removed} 个重复节点，保留首次配置。` : "";
     notify((state.demo ? "演示配置已应用。" : "节点配置已保存。") + merged);

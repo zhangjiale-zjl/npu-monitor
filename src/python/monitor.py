@@ -617,6 +617,17 @@ class Monitor:
             temporary.chmod(0o600)
         os.replace(temporary, self.path)
 
+    def add_nodes(self, data):
+        if not isinstance(data, dict) or not isinstance(data.get("nodes"), list) or not data["nodes"]:
+            raise ValueError("请提供需要添加的节点")
+        with self.change_lock:
+            current = copy.deepcopy(self.config)
+            pending = copy.deepcopy(current)
+            pending["nodes"].extend(data["nodes"])
+            config = validate_config(pending, self.path.parent, current)
+            self.reconfigure(config)
+            return {"ok": True, "duplicates_removed": len(pending["nodes"]) - len(config["nodes"])}
+
     def reorder_models(self, data):
         if not isinstance(data, dict) or "model_order" not in data:
             raise ValueError("请提供机型顺序")
@@ -822,6 +833,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/model-order":
                 order = self.server.monitor.reorder_models(data)
                 self.reply(200, {"ok": True, "model_order": order})
+                return
+            elif path == "/api/nodes":
+                self.reply(200, self.server.monitor.add_nodes(data))
                 return
             elif path == "/api/control":
                 if not isinstance(data, dict):

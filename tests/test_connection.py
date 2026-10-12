@@ -116,6 +116,48 @@ class ConnectionTests(unittest.TestCase):
         self.assertIn(str(key), self.calls[0])
         self.assertIn("IdentitiesOnly=yes", self.calls[0])
 
+    def test_new_node_inherits_saved_default_key_for_test_and_collection(self):
+        key = self.base / "default-key"
+        key.touch()
+        config = validate_config({"identity_file": "default-key", "timeout": 19, "nodes": []}, self.base)
+        self.monitor.reconfigure(config, persist=False)
+        result = self.probe(identity_file="")
+        self.assertTrue(result["ssh_ok"])
+        self.assertEqual(self.calls[0][self.calls[0].index("-i") + 1], str(key))
+        self.assertIn("IdentitiesOnly=yes", self.calls[0])
+        self.monitor.add_nodes({"nodes": [{"host": "test-node", "identity_file": ""}],
+                                "identity_file": "", "timeout": 1})
+        worker = self.monitor.workers["test-node:22"]
+        self.assertEqual(worker.session.identity, str(key))
+        worker.session.query()
+        self.assertEqual(self.calls[1][self.calls[1].index("-i") + 1], str(key))
+        self.assertEqual(self.monitor.config["identity_file"], str(key))
+        self.assertEqual(self.monitor.config["timeout"], 19)
+        self.assertEqual(json.loads(self.path.read_text())["nodes"][0]["identity_file"], "")
+        self.assertTrue(self.probe(identity_file="")["reused_connection"])
+        self.assertEqual(len(self.calls), 2)
+
+    def test_changed_default_key_updates_only_inheriting_node_session(self):
+        key = self.base / "default-key"
+        updated_key = self.base / "updated-key"
+        key.touch()
+        updated_key.touch()
+        config = validate_config({"identity_file": str(key), "nodes": [
+            {"host": "inherited-node"}, {"host": "explicit-node", "identity_file": str(key)}]}, self.base)
+        self.monitor.reconfigure(config, persist=False)
+        inherited = self.monitor.workers["inherited-node:22"]
+        explicit = self.monitor.workers["explicit-node:22"]
+        inherited.session.query()
+        explicit.session.query()
+        updated = copy.deepcopy(config)
+        updated["identity_file"] = str(updated_key)
+        self.monitor.reconfigure(updated, persist=False)
+        self.assertIsNot(self.monitor.workers["inherited-node:22"], inherited)
+        self.assertTrue(inherited.session.closed)
+        self.assertIs(self.monitor.workers["explicit-node:22"], explicit)
+        self.assertEqual(self.monitor.workers["inherited-node:22"].session.identity, str(updated_key))
+        self.assertEqual(explicit.session.identity, str(key))
+
     def test_saved_password_is_used_without_exposing_or_replacing_it(self):
         self.mode = "password-ok"
         key = self.base / "default-key"

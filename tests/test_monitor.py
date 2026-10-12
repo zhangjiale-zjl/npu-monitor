@@ -715,6 +715,50 @@ class HTTPTests(unittest.TestCase):
             finally:
                 self.monitor.close()
 
+    def test_add_endpoint_preserves_saved_defaults_credentials_orders_and_workers(self):
+        self.monitor.control("pause")
+        key = self.path.parent / "synthetic-default-key"
+        key.touch()
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: (host, port)):
+            config = validate_config({"identity_file": str(key), "interval": 17, "timeout": 23,
+                "nodes": [{"host": "existing-node"}, {"host": "password-node", "auth_type": "password",
+                          "password": "synthetic-preserved-password"}],
+                "model_order": ["Synthetic Z"], "node_order": {"Synthetic Z": ["existing-node:22"]}}, self.path.parent)
+            self.monitor.reconfigure(config)
+            workers = dict(self.monitor.workers)
+            data = {"nodes": [{"host": "added-node", "identity_file": ""}], "identity_file": "",
+                    "interval": 1, "timeout": 1, "model_order": [], "node_order": {}}
+            status, _, body = self.request("POST", "/api/nodes", data, {"X-Monitor-Token": self.server.token})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True, "duplicates_removed": 0})
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["identity_file"], str(key))
+        self.assertEqual(saved["interval"], 17)
+        self.assertEqual(saved["timeout"], 23)
+        self.assertEqual(saved["model_order"], ["Synthetic Z"])
+        self.assertEqual(saved["node_order"], {"Synthetic Z": ["existing-node:22"]})
+        self.assertEqual(saved["nodes"][1]["password"], "synthetic-preserved-password")
+        self.assertTrue(self.monitor.paused)
+        self.assertTrue(all(self.monitor.workers[node_id] is worker for node_id, worker in workers.items()))
+        self.assertEqual(self.monitor.workers["added-node:22"].session.identity, str(key))
+
+    def test_add_endpoint_checks_token_validation_and_deduplication(self):
+        self.monitor.control("pause")
+        self.assertEqual(self.request("POST", "/api/nodes", {})[0], 403)
+        token = {"X-Monitor-Token": self.server.token}
+        for data in (None, [], {}, {"nodes": []}, {"nodes": [{"host": "invalid host"}]}):
+            self.assertEqual(self.request("POST", "/api/nodes", data, token)[0], 400)
+        self.assertFalse(self.path.exists())
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: (host, port)):
+            data = {"nodes": [{"host": "duplicate-node"}, {"host": "duplicate-node", "identity_file": ""}]}
+            status, _, body = self.request("POST", "/api/nodes", data, token)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["duplicates_removed"], 1)
+            worker = self.monitor.workers["duplicate-node:22"]
+            self.assertEqual(self.request("POST", "/api/nodes", data, token)[0], 200)
+        self.assertEqual(len(self.monitor.config["nodes"]), 1)
+        self.assertIs(self.monitor.workers["duplicate-node:22"], worker)
+
 
 class PlatformTests(unittest.TestCase):
     def test_system_product_and_readonly_fallback(self):
