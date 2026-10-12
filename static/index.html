@@ -23,10 +23,10 @@
   <main class="workspace">
     <aside id="model-sidebar" class="model-sidebar" aria-label="机器型号目录">
       <div class="sidebar-head"><h2 class="sidebar-title">机器型号</h2><button id="sidebar-toggle" class="subtle" aria-label="收起机型目录" aria-expanded="true" aria-controls="model-directory-content" title="收起机型目录"><span aria-hidden="true">‹</span></button></div>
-      <div id="model-directory-content"><nav id="model-directory" aria-label="按机器型号定位"></nav><p id="directory-empty" class="directory-hint">添加节点后显示机器型号</p><p class="directory-hint">点击型号定位分区</p></div>
+      <div id="model-directory-content"><div id="model-directory" role="group" aria-label="按机器型号筛选"></div><p id="directory-empty" class="directory-hint">添加节点后显示机器型号</p><p class="directory-hint">点击型号筛选环境</p></div>
     </aside>
     <section class="content" aria-label="NPU 监控数据">
-      <div class="overview" id="all-models" tabindex="-1"><div><h2 id="view-title">全部节点 · NPU 总览</h2><p id="view-description">等待节点数据</p></div><div class="summary" id="summary"></div></div>
+      <div class="overview"><div><h2 id="view-title" aria-live="polite">全部节点 · NPU 总览</h2><p id="view-description">等待节点数据</p></div><div class="summary" id="summary"></div></div>
       <div id="nodes" class="model-groups"></div>
       <div id="empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▦</div><h3>添加需要监控的节点</h3><p>填写节点地址，沿用本机 SSH 配置或指定私钥文件。</p><button id="empty-settings" class="primary">＋ 添加节点</button></div>
     </section>

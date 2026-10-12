@@ -7,9 +7,8 @@ let polling = false;
 let serviceDisconnected = false;
 let noticeTimer;
 const detailsOpen = new Set();
-const modelIds = new Map();
 let directorySignature = "";
-let activeModelId = "all-models";
+let selectedModel = null;
 let directoryCollapsed = false;
 try { directoryCollapsed = localStorage.getItem("npu-monitor-directory-collapsed") === "true"; } catch (_) {}
 
@@ -284,54 +283,43 @@ function modelGroups(nodes) {
     : right.length - left.length || a.localeCompare(b, "zh-CN", {numeric: true}));
 }
 
-function modelId(model) {
-  if (!modelIds.has(model)) modelIds.set(model, `machine-model-${modelIds.size + 1}`);
-  return modelIds.get(model);
-}
-
-function markDirectoryLocation() {
-  $("model-directory").querySelectorAll("a").forEach(link => {
-    const selected = link.dataset.target === activeModelId;
-    link.classList.toggle("selected", selected);
-    if (selected) link.setAttribute("aria-current", "location"); else link.removeAttribute("aria-current");
+function markDirectorySelection() {
+  $("model-directory").querySelectorAll("button").forEach(button => {
+    const selected = button.dataset.model === (selectedModel ?? "");
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
   });
 }
 
-function directoryLink(label, count, id) {
-  const link = el("a", "model-link");
-  link.href = `#${id}`;
-  link.dataset.target = id;
-  link.setAttribute("aria-label", `${label}，${count} 个节点`);
-  link.append(el("span", "model-label", label), el("span", "model-count", count));
-  link.title = `${label} · ${count} 个节点`;
-  link.addEventListener("click", event => {
-    event.preventDefault();
-    const target = $(id);
-    if (!target) return;
-    activeModelId = id;
-    markDirectoryLocation();
-    target.scrollIntoView({behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start"});
-    target.focus({preventScroll: true});
+function directoryButton(label, count, model) {
+  const button = el("button", "model-filter");
+  button.type = "button";
+  button.dataset.model = model ?? "";
+  button.setAttribute("aria-label", `${label}，${count} 个节点`);
+  button.setAttribute("aria-controls", "nodes");
+  button.append(el("span", "model-label", label), el("span", "model-count", count));
+  button.title = `${label} · ${count} 个节点`;
+  button.addEventListener("click", () => {
+    selectedModel = model;
+    render();
   });
-  return link;
+  return button;
 }
 
 function renderDirectory(groups) {
   const signature = JSON.stringify(groups.map(([model, nodes]) => [model, nodes.length]));
-  if (signature === directorySignature) return;
-  directorySignature = signature;
-  const list = el("div", "model-links");
-  groups.forEach(([model, nodes]) => list.append(directoryLink(model, nodes.length, modelId(model))));
-  if (!groups.some(([model]) => modelId(model) === activeModelId)) activeModelId = "all-models";
-  $("model-directory").replaceChildren(directoryLink("全部节点", state.nodes.length, "all-models"), list);
-  $("directory-empty").hidden = groups.length > 0;
-  markDirectoryLocation();
+  if (signature !== directorySignature) {
+    directorySignature = signature;
+    const list = el("div", "model-filters");
+    groups.forEach(([model, nodes]) => list.append(directoryButton(model, nodes.length, model)));
+    $("model-directory").replaceChildren(directoryButton("全部节点", state.nodes.length, null), list);
+    $("directory-empty").hidden = groups.length > 0;
+  }
+  markDirectorySelection();
 }
 
 function modelSection(model, nodes) {
   const section = el("section", "model-group");
-  section.id = modelId(model);
-  section.tabIndex = -1;
   if (nodes.length > 2) section.classList.add("model-wide");
   else if (nodes.length === 2) section.classList.add("model-double");
   section.setAttribute("aria-label", `${model} 节点分区`);
@@ -348,7 +336,9 @@ function modelSection(model, nodes) {
 
 function render() {
   if (!state) return;
-  const signature = JSON.stringify([state.nodes, state.paused, state.config]);
+  const allGroups = modelGroups(state.nodes);
+  if (selectedModel !== null && !allGroups.some(([model]) => model === selectedModel)) selectedModel = null;
+  const signature = JSON.stringify([state.nodes, state.paused, state.config, selectedModel]);
   if (signature === lastRender) return;
   lastRender = signature;
   $("demo-label").hidden = !state.demo;
@@ -356,13 +346,13 @@ function render() {
   $("refresh").disabled = state.paused;
   $("poll-state").textContent = state.paused ? "采集已暂停" : `每 ${state.config.interval} 秒采集`;
   if (document.activeElement !== $("interval")) $("interval").value = state.config.interval;
-  const nodes = state.nodes;
+  const groups = selectedModel === null ? allGroups : allGroups.filter(([model]) => model === selectedModel);
+  const nodes = groups.flatMap(([, members]) => members);
   const devices = nodes.flatMap(n => n.devices);
   const online = nodes.filter(n => n.status === "ok").length;
-  const groups = modelGroups(nodes);
-  renderDirectory(groups);
-  $("view-title").textContent = "全部节点 · NPU 总览";
-  $("view-description").textContent = state.paused ? "采集已暂停，按机型展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · 按服务器型号分区`;
+  renderDirectory(allGroups);
+  $("view-title").textContent = `${selectedModel ?? "全部节点"} · NPU 总览`;
+  $("view-description").textContent = state.paused ? "采集已暂停，展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · ${selectedModel === null ? "按服务器型号分区" : "当前机型"}`;
   $("summary").replaceChildren();
   for (const [label,value] of [["节点", nodes.length], ["NPU / 芯片", devices.length], ["Health 非 OK", devices.filter(d => d.health !== "OK").length], ["采集异常", nodes.filter(n => n.status === "error" || n.status === "warning").length]]) {
     const item = el("div", "summary-item", label); item.prepend(el("strong", "", value)); $("summary").append(item);
