@@ -75,6 +75,39 @@ class ConnectionTests(unittest.TestCase):
         self.assertIn("8 张 NPU 卡、16 个 die", result["message"])
         self.assertIn("1 个 Health 非 OK", result["message"])
 
+    def test_a5_connection_reports_cards_without_inventing_die_ids(self):
+        self.mode = "a5"
+        result = self.probe()
+        self.assertTrue(result["npu_ok"])
+        self.assertIn("8 张 NPU 卡", result["message"])
+        self.assertNotIn("die", result["message"])
+        self.assertIn("1 个 Health 非 OK", result["message"])
+
+    def test_a5_collection_uses_device_board_query_and_npu_util_history(self):
+        self.mode = "a5"
+        self.monitor.reconfigure(validate_config({"nodes": [{"host": "a5-node"}]}, self.base), persist=False)
+        worker = self.monitor.workers["a5-node:22"]
+        with patch.object(worker.session, "_request", wraps=worker.session._request) as request:
+            self.monitor.control("resume")
+            deadline = time.monotonic() + 3
+            while not worker.state["updated_at"] and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.monitor.control("pause")
+            state = self.monitor.snapshot()["nodes"][0]
+            self.assertEqual(state["status"], "ok")
+            self.assertEqual(state["platform"], "A5")
+            self.assertIsNone(state["platform_error"])
+            self.assertEqual(len(state["devices"]), 8)
+            self.assertEqual(len(state["processes"]), 9)
+            self.assertEqual(state["history"][0]["value"], 42.5)
+            self.assertEqual(state["history"][0]["label"], "NPU Util")
+            board = [call for call in request.call_args_list if call.args[0].startswith("NPU_BOARD_")]
+            self.assertEqual(len(board), 1)
+            self.assertEqual(board[0].args[1], " 0 0 device")
+        self.assertEqual(len(self.calls), 1)
+        with self.assertRaisesRegex(ValueError, "Chip ID"):
+            worker.session.query_board(state["devices"][0], time.monotonic() + 2, device_scope=False)
+
     def test_existing_session_is_reused_without_changing_history(self):
         config = validate_config({"nodes": [{"host": "test-node"}]}, self.base)
         self.monitor.reconfigure(config, persist=False)

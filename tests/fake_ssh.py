@@ -9,6 +9,8 @@ mode = sys.argv[1]
 raw = (Path(__file__).parent / "fixtures" / "npu-smi-synthetic.txt").read_text(encoding="utf-8")
 if mode == "a3":
     raw = (Path(__file__).parent / "fixtures" / "npu-smi-a3-synthetic.txt").read_text(encoding="utf-8")
+if mode == "a5":
+    raw = (Path(__file__).parent / "fixtures" / "npu-smi-a5-synthetic.txt").read_text(encoding="utf-8")
 if mode == "password-host-changed":
     print("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.", flush=True)
     raise SystemExit(255)
@@ -44,7 +46,8 @@ for request in sys.stdin:
             print("unsupported board query", flush=True)
             print(request + " END 2", flush=True)
         else:
-            boards = {"board-a3": "Chip Name : Ascend910\nNPU Name : 9392",
+            boards = {"a5": "Chip Name : Ascend950PR\nNPU Name : 9579",
+                      "board-a3": "Chip Name : Ascend910\nNPU Name : 9392",
                       "board-a5": "Chip Name : Ascend950PR\nNPU Name : 9579"}
             print(boards.get(mode, "Chip Type : Ascend\nChip Name : 910B4"), flush=True)
             print(request + " END 0", flush=True)

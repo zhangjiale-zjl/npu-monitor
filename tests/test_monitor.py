@@ -20,6 +20,7 @@ from npu_platform import detect_platform, model_generation, server_generation, s
 TESTS = Path(__file__).parent
 FIXTURE = (TESTS / "fixtures" / "npu-smi-synthetic.txt").read_text(encoding="utf-8")
 A3_FIXTURE = (TESTS / "fixtures" / "npu-smi-a3-synthetic.txt").read_text(encoding="utf-8")
+A5_FIXTURE = (TESTS / "fixtures" / "npu-smi-a5-synthetic.txt").read_text(encoding="utf-8")
 
 
 def wait_until(predicate, timeout=3):
@@ -32,6 +33,50 @@ def wait_until(predicate, timeout=3):
 
 
 class ParserTests(unittest.TestCase):
+    def test_a5_card_only_table_utilization_memory_and_processes(self):
+        result = parse_info(A5_FIXTURE)
+        devices = result["devices"]
+        self.assertIsNone(result["warning"])
+        self.assertEqual(result["version"], "TEST.A5")
+        self.assertEqual(len(devices), 8)
+        self.assertEqual([device["npu_id"] for device in devices], list(range(8)))
+        self.assertTrue(all(device["chip_id"] is None and device["aicore_percent"] is None for device in devices))
+        self.assertTrue(all(device["utilization_label"] == "NPU Util" for device in devices))
+        self.assertEqual([device["utilization_percent"] for device in devices], [0, 10, 20, 30, 100, 50, 60, 70])
+        self.assertEqual(devices[6]["health"], "Critical")
+        self.assertEqual(devices[4]["hbm"]["percent"], 87.5)
+        self.assertEqual(devices[4]["memory"]["percent"], 25)
+        self.assertEqual(devices[4]["power_w"], 124)
+        self.assertEqual(devices[4]["temperature_c"], 34)
+        self.assertIsNone(devices[0]["memory"]["percent"])
+        self.assertEqual(detect_platform(devices), "A5")
+        self.assertEqual(len(result["processes"]), 9)
+        self.assertTrue(all(process["chip_id"] is None for process in result["processes"]))
+        self.assertEqual(result["processes"][0]["name"], "synthetic worker")
+        self.assertIsNone(result["processes"][0]["container_pid"])
+        self.assertEqual(result["processes"][1]["container_pid"], 20)
+        self.assertEqual(result["processes"][-1]["memory_mb"], 20480)
+
+    def test_a5_unknown_out_of_range_and_incomplete_metrics(self):
+        for value in ("NA", "101", "-"):
+            parsed = parse_info(A5_FIXTURE.replace("100 16 / 64", value + " 16 / 64"))
+            self.assertIsNone(parsed["devices"][4]["utilization_percent"])
+            self.assertIsNone(parsed["warning"])
+        parsed = parse_info(A5_FIXTURE.replace("NPU Util(%)", "NPU    Util(%)"))
+        self.assertEqual(parsed["devices"][4]["utilization_percent"], 100)
+        parsed = parse_info(A5_FIXTURE.replace("| | | 0000:a7:00.0", "| missing | | 0000:a7:00.0"))
+        self.assertEqual(len(parsed["devices"]), 7)
+        self.assertIn("1 条", parsed["warning"])
+
+    def test_demo_a5_uses_card_only_npu_util_format(self):
+        result = parse_info(demo_output(2, 1))
+        self.assertIsNone(result["warning"])
+        self.assertEqual(len(result["devices"]), 8)
+        self.assertTrue(all(device["chip_id"] is None for device in result["devices"]))
+        self.assertEqual(result["devices"][0]["utilization_label"], "NPU Util")
+        self.assertEqual(len(result["processes"]), 2)
+        self.assertTrue(all(process["chip_id"] is None for process in result["processes"]))
+
     def test_a3_eight_cards_sixteen_independent_dies(self):
         result = parse_info(A3_FIXTURE)
         devices = result["devices"]

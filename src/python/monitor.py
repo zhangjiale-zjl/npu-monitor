@@ -347,7 +347,10 @@ class SSHSession:
 
     def query_board(self, device, deadline, device_scope=False):
         # IDs are parsed integers; only this fixed query can enter the protocol.
-        npu, chip = int(device["npu_id"]), int(device["chip_id"])
+        npu = int(device["npu_id"])
+        if not device_scope and device["chip_id"] is None:
+            raise ValueError("当前输出未提供 Chip ID，需使用设备级型号查询")
+        chip = 0 if device_scope else int(device["chip_id"])
         if npu < 0 or chip < 0:
             raise ValueError("NPU / Chip ID 无效")
         request = "NPU_BOARD_" + secrets.token_hex(16)
@@ -428,18 +431,29 @@ class SSHSession:
 
 def demo_output(index, tick):
     dual_die = index % 3 == 1
+    card_only = index % 3 == 2
     rows = ["| npu-smi TEST.DEMO Version: TEST.DEMO |",
-            "| NPU Name | Health | Power(W) Temp(C) Hugepages-Usage(page) |",
-            f"| {'Chip Phy-ID' if dual_die else 'Chip'} | Bus-Id | AICore(%) Memory-Usage(MB) HBM-Usage(MB) |"]
+            "| NPU ID | Name | Health | Power(W) Temp(C) Hugepages-Usage(page) |" if card_only
+            else "| NPU Name | Health | Power(W) Temp(C) Hugepages-Usage(page) |",
+            "| | | Bus-Id | NPU Util(%) Memory-Usage(MB) HBM-Usage(MB) |" if card_only
+            else f"| {'Chip Phy-ID' if dual_die else 'Chip'} | Bus-Id | AICore(%) Memory-Usage(MB) HBM-Usage(MB) |"]
     for chip in range(16 if dual_die else 8):
         util = int((math.sin(tick / 3 + chip) + 1) * 14 + 48) if index == 0 else (4 if chip < 2 else 0)
         used = (36000 + chip * 760) if index == 0 else (640 if chip < 2 else 0)
         npu_id = chip // 2 if dual_die else chip
         ids = f"{chip % 2} {chip}" if dual_die else "0"
         power = "-" if dual_die and chip % 2 else f"{165 + util * .8:.1f}"
-        rows += [f"| {npu_id} DemoNPU | OK | {power} {42 + util // 9} 0 / 0 |",
-                 f"| {ids} | 0000:{chip + 32:02x}:00.0 | {util} 1420 / 15137 {used} / 65536 |"]
-    rows.append("| NPU Chip Process ID Process name Process memory(MB) |")
+        if card_only:
+            rows += [f"| {npu_id} | Ascend950PR | OK | {power} {42 + util // 9} 0 / 0 |",
+                     f"| | | 0000:{chip + 32:02x}:00.0 | {util} 1420 / 15137 {used} / 65536 |"]
+        else:
+            rows += [f"| {npu_id} DemoNPU | OK | {power} {42 + util // 9} 0 / 0 |",
+                     f"| {ids} | 0000:{chip + 32:02x}:00.0 | {util} 1420 / 15137 {used} / 65536 |"]
+    if card_only:
+        rows.append("| NPU ID | Process id | Process name | Process memory(MB) | Process id in container |")
+        rows += [f"| {chip} | {52000 + chip} | demo-worker | 640 | NA |" for chip in range(2)]
+    else:
+        rows.append("| NPU Chip Process ID Process name Process memory(MB) |")
     if index == 0:
         rows += [f"| {chip} 0 {32000 + chip} python {35500 + chip * 760} |" for chip in range(8)]
     return "\n".join(rows)
@@ -558,8 +572,11 @@ class Worker:
                                   duration_ms=round((time.monotonic() - start) * 1000))
                 if result["status"] == "ok":
                     self.state["last_success_at"] = stamp
-                values = [d["aicore_percent"] for d in result["devices"] if d["aicore_percent"] is not None]
-                self.state["history"].append({"time": stamp, "value": round(sum(values) / len(values), 2) if values else None})
+                values = [d["utilization_percent"] for d in result["devices"] if d["utilization_percent"] is not None]
+                label = (result["devices"][0]["utilization_label"] if result["devices"] else
+                         self.state["history"][-1]["label"] if self.state["history"] else "AICore")
+                self.state["history"].append({"time": stamp, "value": round(sum(values) / len(values), 2) if values else None,
+                                              "label": label})
                 self.state["history"] = self.state["history"][-120:]
                 interval = self.monitor.config["interval"]
             if self.monitor.once:
@@ -693,7 +710,9 @@ class Monitor:
                     devices = parsed["devices"]
                     unhealthy = sum(device["health"] != "OK" for device in devices)
                     cards = len({device["npu_id"] for device in devices})
-                    message = f"SSH 连接成功 · 已读取 {cards} 张 NPU 卡、{len(devices)} 个 die"
+                    message = f"SSH 连接成功 · 已读取 {cards} 张 NPU 卡"
+                    if devices and all(device["chip_id"] is not None for device in devices):
+                        message += f"、{len(devices)} 个 die"
                     if unhealthy:
                         message += f" · {unhealthy} 个 Health 非 OK"
                     if parsed["warning"]:

@@ -186,8 +186,17 @@ function notify(text, error = false) {
 
 const fmt = (n, digits = 0) => n == null ? "—" : Number(n).toFixed(digits);
 const timeText = (stamp) => stamp ? new Date(stamp).toLocaleTimeString("zh-CN", {hour12: false}) : "尚未采集";
+const utilizationValue = device => device.utilization_percent ?? device.aicore_percent;
+const utilizationLabel = devices => devices.some(device => device.utilization_label === "NPU Util") ? "NPU Util" : "AICore";
+const deviceId = device => device.chip_id == null ? String(device.npu_id) : `${device.npu_id}/${device.chip_id}`;
+const deviceColumn = devices => devices.some(device => device.chip_id != null) ? "NPU / Die" : "NPU ID";
+const dieCountText = devices => {
+  const known = devices.filter(device => device.chip_id != null).length;
+  return known === devices.length ? String(known) : known ? `${known}+?` : "—";
+};
+const dieSummary = devices => devices.some(device => device.chip_id != null) ? ` · ${dieCountText(devices)} die` : "";
 const avg = (devices) => {
-  const values = devices.map(d => d.aicore_percent).filter(v => v != null);
+  const values = devices.map(utilizationValue).filter(v => v != null);
   return values.length ? values.reduce((a,b) => a+b, 0) / values.length : null;
 };
 const cardCount = devices => new Set(devices.map(device => device.npu_id)).size;
@@ -223,13 +232,15 @@ function memoryAmounts(data) {
 
 function deviceTable(devices, name) {
   const table = el("table", "device-table");
-  table.setAttribute("aria-label", `${name} 每张 NPU 卡各 die 的状态`);
+  table.setAttribute("aria-label", `${name} NPU 状态`);
   const thead = el("thead");
   const heading = el("tr");
-  ["NPU / Die", "Health", "AICore", "HBM", "Memory"].forEach(text => {
+  const usageLabel = utilizationLabel(devices);
+  [deviceColumn(devices), "Health", usageLabel, "HBM", "Memory"].forEach(text => {
     const th = el("th", "", text); th.scope = "col"; heading.append(th);
     if (text === "NPU / Die") th.title = "NPU ID（卡号）/ Chip ID（卡内 die）；Phy-ID 见悬停信息";
-    if (["AICore", "HBM", "Memory"].includes(text)) th.append(el("span", "column-unit", "%"));
+    if (text === "NPU ID") th.title = "NPU ID（卡号）；当前输出未提供 Chip / die 编号";
+    if ([usageLabel, "HBM", "Memory"].includes(text)) th.append(el("span", "column-unit", "%"));
     if (["HBM", "Memory"].includes(text)) th.title = "内存占用率；悬停查看已用 / 总量，详细信息中可展开内存明细";
   });
   thead.append(heading);
@@ -238,16 +249,17 @@ function deviceTable(devices, name) {
   sorted.forEach((device, index) => {
     const row = el("tr", device.health === "OK" ? "" : "unhealthy");
     if (index && device.npu_id !== sorted[index - 1].npu_id) row.classList.add("card-start");
-    const id = el("th", "device-id", `${device.npu_id}/${device.chip_id}`);
+    const id = el("th", "device-id", deviceId(device));
     id.scope = "row";
-    id.title = `${device.name} · NPU ${device.npu_id} / die ${device.chip_id}`
+    id.title = `${device.name} · NPU ${device.npu_id}` + (device.chip_id == null ? "" : ` / die ${device.chip_id}`)
       + (device.phy_id == null ? "" : ` · Phy-ID ${device.phy_id}`)
       + (device.device_id == null ? "" : ` · Device ${device.device_id}`)
       + ` · Bus ${device.bus_id} · ${fmt(device.temperature_c)}°C · ${fmt(device.power_w, 1)} W`;
     const health = el("td", "health-cell");
     health.append(el("span", "health-badge" + (device.health === "OK" ? " healthy" : " abnormal"), device.health || "—"));
     const utilization = el("td", "utilization-cell");
-    utilization.append(el("div", "metric-values", device.aicore_percent == null ? "—" : `${fmt(device.aicore_percent, 1)}%`), meter(device.aicore_percent));
+    const usage = utilizationValue(device);
+    utilization.append(el("div", "metric-values", usage == null ? "—" : `${fmt(usage, 1)}%`), meter(usage));
     row.append(id, health, utilization, memoryCell(device.hbm), memoryCell(device.memory));
     tbody.append(row);
   });
@@ -257,13 +269,13 @@ function deviceTable(devices, name) {
   return wrap;
 }
 
-function sparkline(history) {
+function sparkline(history, label = "AICore") {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 600 40");
   svg.setAttribute("preserveAspectRatio", "none");
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "最近 120 次采集的平均 AICore 利用率，范围 0 到 100 百分比");
+  svg.setAttribute("aria-label", `最近 120 次采集的平均 ${label} 利用率，范围 0 到 100 百分比`);
   svg.classList.add("sparkline");
   for (const y of [5, 35]) {
     const line = document.createElementNS(ns, "line");
@@ -339,7 +351,7 @@ function nodeCard(node) {
   title.title = node.platform_error || `环境型号：${node.platform || "尚未识别"}`;
   const right = el("div", "node-head-right");
   const update = el("div", "node-update");
-  update.append(el("div", "", node.collecting ? "正在采集…" : timeText(node.updated_at)), el("div", "", `${cardCount(node.devices)} 卡 · ${node.devices.length} die · 均 ${fmt(avg(node.devices), 1)}%`));
+  update.append(el("div", "", node.collecting ? "正在采集…" : timeText(node.updated_at)), el("div", "", `${cardCount(node.devices)} 卡${dieSummary(node.devices)} · 均 ${fmt(avg(node.devices), 1)}%`));
   const edit = el("button", "edit-node subtle", "编辑");
   edit.setAttribute("aria-label", `编辑节点 ${node.name}`);
   edit.addEventListener("click", () => openSettings({id: node.id}));
@@ -374,16 +386,16 @@ function nodeCard(node) {
   if (node.devices.length) {
     const memory = detail(node.id, "memory", "内存明细 · 已用 / 总量");
     const table = el("table");
-    table.setAttribute("aria-label", `${node.name} 每张 NPU 卡各 die 的内存用量`);
+    table.setAttribute("aria-label", `${node.name} NPU 内存用量`);
     const thead = el("thead"); const heading = el("tr");
-    ["NPU / Die", "HBM（GiB）", "Memory（GiB）"].forEach(text => {
+    [deviceColumn(node.devices), "HBM（GiB）", "Memory（GiB）"].forEach(text => {
       const th = el("th", "", text); th.scope = "col"; heading.append(th);
     });
     thead.append(heading);
     const tbody = el("tbody");
     node.devices.forEach(device => {
       const row = el("tr");
-      const id = el("th", "device-id", `${device.npu_id}/${device.chip_id}`); id.scope = "row";
+      const id = el("th", "device-id", deviceId(device)); id.scope = "row";
       row.append(id);
       [device.hbm, device.memory].forEach(data => {
         const cell = el("td", "", memoryAmounts(data));
@@ -398,9 +410,10 @@ function nodeCard(node) {
   }
   if (node.history.length > 1) {
     const plot = el("div", "node-plot");
-    const caption = el("p", "", "平均 AICore");
+    const label = node.history.at(-1)?.label || utilizationLabel(node.devices);
+    const caption = el("p", "", `平均 ${label}`);
     caption.append(el("br"), document.createTextNode(`最近 ${node.history.length} 次采集`));
-    plot.append(caption, sparkline(node.history));
+    plot.append(caption, sparkline(node.history, label));
     extra.append(plot);
   }
   if (node.platform_error) extra.append(el("p", "no-process", node.platform_error));
@@ -413,12 +426,12 @@ function nodeCard(node) {
   if (node.processes.length) {
     const table = el("table");
     const thead = el("thead"); const tr = el("tr");
-    ["NPU / Die", "PID", "进程名称", "显存（MB）", "容器 PID"].forEach(text => tr.append(el("th", "", text)));
+    [deviceColumn(node.processes), "PID", "进程名称", "显存（MB）", "容器 PID"].forEach(text => tr.append(el("th", "", text)));
     thead.append(tr); table.append(thead);
     const tbody = el("tbody");
     node.processes.forEach(process => {
       const row = el("tr");
-      [`${process.npu_id} / ${process.chip_id}`, process.pid, process.name, fmt(process.memory_mb), process.container_pid ?? "—"].forEach(text => row.append(el("td", "", text)));
+      [deviceId(process), process.pid, process.name, fmt(process.memory_mb), process.container_pid ?? "—"].forEach(text => row.append(el("td", "", text)));
       tbody.append(row);
     });
     table.append(tbody);
@@ -672,10 +685,10 @@ function modelSection(model, nodes) {
   section.setAttribute("aria-label", `${model} 节点分区`);
   const heading = el("div", "model-heading");
   heading.append(el("h3", "", model));
-  const chips = nodes.reduce((sum, node) => sum + node.devices.length, 0);
+  const devices = nodes.flatMap(node => node.devices);
   const cards = nodes.reduce((sum, node) => sum + cardCount(node.devices), 0);
   const failed = nodes.filter(node => node.status === "error" || node.status === "warning").length;
-  heading.append(el("span", "", `${nodes.length} 节点 · ${cards} 卡 · ${chips} die${failed ? ` · ${failed} 采集异常` : ""}`));
+  heading.append(el("span", "", `${nodes.length} 节点 · ${cards} 卡${dieSummary(devices)}${failed ? ` · ${failed} 采集异常` : ""}`));
   const grid = el("div", "nodes-grid");
   grid.append(...nodes.map(nodeCard));
   section.append(heading, grid);
@@ -703,7 +716,7 @@ function render() {
   $("view-description").textContent = state.paused ? "采集已暂停，展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · ${selectedModel === null ? "按服务器型号分区" : "当前机型"}`;
   $("summary").replaceChildren();
   const cards = nodes.reduce((sum, node) => sum + cardCount(node.devices), 0);
-  for (const [label,value] of [["节点", nodes.length], ["卡 / die", `${cards} / ${devices.length}`], ["Health 非 OK", devices.filter(d => d.health !== "OK").length], ["采集异常", nodes.filter(n => n.status === "error" || n.status === "warning").length]]) {
+  for (const [label,value] of [["节点", nodes.length], ["卡 / die", `${cards} / ${dieCountText(devices)}`], ["Health 非 OK", devices.filter(d => d.health !== "OK").length], ["采集异常", nodes.filter(n => n.status === "error" || n.status === "warning").length]]) {
     const item = el("div", "summary-item", label); item.prepend(el("strong", "", value)); $("summary").append(item);
   }
   $("nodes").replaceChildren(...groups.map(([model, members]) => modelSection(model, members)));
