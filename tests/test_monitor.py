@@ -12,8 +12,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from monitor import (CollectionError, DashboardServer, Monitor, Node, SSHSession,
-                     demo_output, validate_config)
+                     demo_output, normalize_address, resolve_endpoint, validate_config)
 from npu_parser import memory, parse_info
+from npu_platform import detect_platform, model_generation, server_generation, system_product
 
 TESTS = Path(__file__).parent
 FIXTURE = (TESTS / "fixtures" / "npu-smi-synthetic.txt").read_text(encoding="utf-8")
@@ -83,6 +84,51 @@ class ParserTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_same_endpoint_with_different_names_users_and_credentials_is_merged(self):
+        data = {"nodes": [{"host": "HOST", "name": "first", "user": "first-user"},
+                          {"host": "host", "name": "second", "user": "other-user", "port": 22}]}
+        result = validate_config(data, TESTS)
+        self.assertEqual(len(result["nodes"]), 1)
+        self.assertEqual(result["nodes"][0]["user"], "first-user")
+        self.assertNotIn("name", result["nodes"][0])
+
+    def test_ssh_aliases_are_merged_and_ports_remain_distinct(self):
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: ("127.0.0.1", port or 2222)):
+            result = validate_config({"nodes": [{"host": "alias"}, {"host": "127.0.0.1", "port": 2222},
+                                                 {"host": "another-alias", "port": 2200}]}, TESTS)
+        self.assertEqual(len(result["nodes"]), 2)
+        self.assertEqual([node["ssh_port"] for node in result["nodes"]], [2222, 2200])
+
+    def test_limit_applies_after_deduplication(self):
+        data = {"nodes": [{"host": f"synthetic-node-{index}"} for index in range(64)]}
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: (host, port or 22)):
+            data["nodes"].append({"host": "synthetic-node-0", "name": "different-label"})
+            self.assertEqual(len(validate_config(data, TESTS)["nodes"]), 64)
+            data["nodes"].append({"host": "synthetic-extra-node"})
+            with self.assertRaises(ValueError):
+                validate_config(data, TESTS)
+
+    def test_password_is_preserved_by_endpoint_and_user_and_not_by_name(self):
+        with patch("monitor.resolve_endpoint", return_value=("127.0.0.1", 22)):
+            current = validate_config({"nodes": [{"host": "alias-one", "user": "account", "auth_type": "password", "password": "synthetic-password"}]}, TESTS)
+            result = validate_config({"nodes": [{"host": "alias-two", "user": "account", "auth_type": "password"}]}, TESTS, current)
+            self.assertEqual(result["nodes"][0]["password"], "synthetic-password")
+            with self.assertRaises(ValueError):
+                validate_config({"nodes": [{"host": "alias-two", "user": "other-account", "auth_type": "password"}]}, TESTS, current)
+        with self.assertRaises(ValueError):
+            validate_config({"nodes": [{"host": "new-host", "name": "same", "auth_type": "password"}]}, TESTS,
+                            {"nodes": [{"host": "old-host", "name": "same", "auth_type": "password", "password": "synthetic-password"}]})
+
+    def test_ipv6_and_hostname_normalization(self):
+        self.assertEqual(normalize_address("0:0:0:0:0:0:0:1"), "::1")
+        self.assertEqual(normalize_address("EXAMPLE-NODE."), "example-node")
+
+    def test_resolver_reads_effective_ssh_hostname_and_port(self):
+        reply = subprocess.CompletedProcess([], 0, b"hostname 127.0.0.1\nport 2200\n", b"")
+        with patch("monitor.subprocess.run", return_value=reply) as run:
+            self.assertEqual(resolve_endpoint("alias", "account"), ("127.0.0.1", 2200))
+        self.assertEqual(run.call_args.args[0], ["ssh", "-G", "-o", "CanonicalizeHostname=no", "-l", "account", "alias"])
+
     def test_defaults_preserve_ssh_configuration(self):
         result = validate_config({"nodes": [{"host": "alias"}]}, TESTS)
         self.assertEqual(result["interval"], 5)
@@ -98,7 +144,6 @@ class ConfigTests(unittest.TestCase):
                  {"nodes": [{"host": "host", "port": True}]},
                  {"nodes": [{"host": "host", "port": 70000}]},
                  {"nodes": [{"host": "host", "user": "a b"}]},
-                 {"nodes": [{"host": "a", "name": "same"}, {"host": "b", "name": "same"}]},
                  {"identity_file": "id.pub"}, {"npu_smi_path": "npu-smi;bad"}]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValueError):
@@ -127,7 +172,7 @@ class TransportTests(unittest.TestCase):
         patcher = patch("monitor.subprocess.Popen", side_effect=spawn)
         patcher.start()
         self.addCleanup(patcher.stop)
-        session = SSHSession(Node("test", "host", "example-user", 2222), "chosen-key", timeout)
+        session = SSHSession(Node("host", "example-user", 2222), "chosen-key", timeout)
         self.addCleanup(session.close)
         return session, calls
 
@@ -146,6 +191,29 @@ class TransportTests(unittest.TestCase):
         self.assertIn("ClearAllForwardings=yes", calls[0])
         session.close()
         self.assertIsNotNone(process.poll())
+
+    def test_hardware_query_reuses_connection_and_receives_server_ip(self):
+        session, calls = self.session(["board-a3"])
+        raw, rc = session.query()
+        self.assertEqual(rc, 0)
+        self.assertEqual(session.address, "127.0.0.1")
+        self.assertNotIn("NPU_MONITOR_ADDRESS", raw)
+        system, rc = session.query_system(time.monotonic() + 2)
+        self.assertEqual(rc, 0)
+        self.assertEqual(system_product(system), ("Synthetic Server", "dmidecode"))
+        board, rc = session.query_board(parse_info(raw)["devices"][0], time.monotonic() + 2)
+        self.assertEqual(rc, 0)
+        self.assertEqual(detect_platform(parse_info(raw)["devices"], board), "A3")
+        self.assertEqual(session.query()[1], 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(session.generation, 1)
+
+    def test_board_command_error_keeps_monitoring_connection(self):
+        session, calls = self.session(["board-error"])
+        raw, _ = session.query()
+        self.assertEqual(session.query_board(parse_info(raw)["devices"][0], time.monotonic() + 2)[1], 2)
+        self.assertEqual(session.query()[1], 0)
+        self.assertEqual(len(calls), 1)
 
     def test_command_failure_keeps_session(self):
         session, calls = self.session(["command-error"])
@@ -180,16 +248,92 @@ class TransportTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(SSHSession, "query_board", return_value=("Chip Name : 910B4", 0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(SSHSession, "query_system", return_value=("Synthetic Server", 0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_once_collects_exactly_one_sample(self):
         with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
             config = validate_config({"interval": 1, "nodes": [{"host": "demo"}]}, TESTS)
             monitor = Monitor(config, Path(temporary) / "nodes.json", demo=True, once=True)
             try:
-                worker = monitor.workers["demo"]
+                worker = monitor.workers["demo:22"]
                 worker.thread.join(timeout=2)
                 self.assertFalse(worker.thread.is_alive())
                 self.assertEqual(worker.tick, 1)
                 self.assertEqual(len(monitor.snapshot()["nodes"][0]["history"]), 1)
+            finally:
+                monitor.close()
+
+    def test_automatic_name_and_identity_survive_config_save(self):
+        config = validate_config({"interval": 3600, "nodes": [{"host": "demo", "name": "arbitrary"}]}, TESTS)
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, patch.object(SSHSession, "query", return_value=(FIXTURE, 0)):
+            monitor = Monitor(config, Path(temporary) / "nodes.json")
+            try:
+                wait_until(lambda: monitor.snapshot()["nodes"][0]["updated_at"])
+                state = monitor.snapshot()
+                self.assertEqual(state["nodes"][0]["name"], "A2 - demo")
+                self.assertEqual(state["nodes"][0]["platform"], "A2")
+                self.assertEqual(state["nodes"][0]["server_model"], "Synthetic Server")
+                worker = monitor.workers[state["nodes"][0]["id"]]
+                monitor.reconfigure(validate_config(state["config"], TESTS, config))
+                self.assertIs(monitor.workers[worker.node.id], worker)
+                self.assertNotIn("name", json.loads(monitor.path.read_text())["nodes"][0])
+            finally:
+                monitor.close()
+
+    def test_board_failure_does_not_hide_valid_utilization(self):
+        config = validate_config({"nodes": [{"host": "demo"}]}, TESTS)
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, patch.object(SSHSession, "query", return_value=(FIXTURE, 0)), \
+                patch.object(SSHSession, "query_board", return_value=("unsupported", 2)):
+            monitor = Monitor(config, Path(temporary) / "nodes.json", once=True)
+            try:
+                wait_until(lambda: monitor.snapshot()["nodes"][0]["updated_at"])
+                node = monitor.snapshot()["nodes"][0]
+                self.assertEqual(node["status"], "ok")
+                self.assertEqual(node["name"], "未知环境 - demo")
+                self.assertEqual(len(node["devices"]), 8)
+                self.assertIn("2", node["platform_error"])
+            finally:
+                monitor.close()
+
+    def test_server_model_survives_npu_failure_and_queries_are_cached(self):
+        config = validate_config({"interval": 3600, "nodes": [{"host": "demo"}]}, TESTS)
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, \
+                patch.object(SSHSession, "query", return_value=("driver unavailable", 187)), \
+                patch.object(SSHSession, "query_system", return_value=("Synthetic Server A3", 0)) as system:
+            monitor = Monitor(config, Path(temporary) / "nodes.json")
+            try:
+                wait_until(lambda: monitor.snapshot()["nodes"][0]["updated_at"])
+                node = monitor.snapshot()["nodes"][0]
+                self.assertEqual(node["server_model"], "Synthetic Server A3")
+                self.assertEqual(node["name"], "A3 - demo")
+                self.assertEqual(node["exit_code"], 187)
+                self.assertEqual(node["devices"], [])
+                samples = len(node["history"])
+                monitor.control("refresh")
+                wait_until(lambda: len(monitor.snapshot()["nodes"][0]["history"]) > samples)
+                self.assertEqual(system.call_count, 1)
+            finally:
+                monitor.close()
+
+    def test_server_model_failure_preserves_utilization(self):
+        config = validate_config({"nodes": [{"host": "demo"}]}, TESTS)
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary, \
+                patch.object(SSHSession, "query", return_value=(FIXTURE, 0)), \
+                patch.object(SSHSession, "query_system", return_value=("denied", 1)):
+            monitor = Monitor(config, Path(temporary) / "nodes.json", once=True)
+            try:
+                wait_until(lambda: monitor.snapshot()["nodes"][0]["updated_at"])
+                node = monitor.snapshot()["nodes"][0]
+                self.assertEqual(node["status"], "ok")
+                self.assertIsNone(node["server_model"])
+                self.assertIn("1", node["server_model_error"])
+                self.assertEqual(len(node["devices"]), 8)
             finally:
                 monitor.close()
 
@@ -199,7 +343,7 @@ class WorkerTests(unittest.TestCase):
             monitor = Monitor(config, Path(temporary) / "nodes.json", demo=True)
             try:
                 wait_until(lambda: monitor.snapshot()["nodes"][0]["updated_at"] is not None)
-                worker = monitor.workers["训练节点"]
+                worker = monitor.workers["demo:22"]
                 monitor.control("pause")
                 time.sleep(.08)
                 tick = worker.tick
@@ -208,7 +352,7 @@ class WorkerTests(unittest.TestCase):
                 changed = copy.deepcopy(config)
                 changed["interval"] = 3
                 monitor.reconfigure(changed)
-                self.assertIs(monitor.workers["训练节点"], worker)
+                self.assertIs(monitor.workers["demo:22"], worker)
                 monitor.control("resume")
                 wait_until(lambda: worker.tick > tick)
                 monitor.reconfigure(validate_config({"nodes": []}, TESTS))
@@ -239,6 +383,12 @@ class WorkerTests(unittest.TestCase):
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
+        patcher = patch.object(SSHSession, "query_board", return_value=("Chip Name : 910B4", 0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(SSHSession, "query_system", return_value=("Synthetic Server", 0))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.temporary = tempfile.TemporaryDirectory(dir=TESTS)
         self.path = Path(self.temporary.name) / "nodes.json"
         self.monitor = Monitor(validate_config({"nodes": []}, TESTS), self.path)
@@ -272,6 +422,10 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["nodes"], [])
 
+    def test_only_one_dashboard_can_listen_on_a_port(self):
+        with self.assertRaises(OSError):
+            DashboardServer(self.server.server_port, self.monitor)
+
     def test_cross_origin_host_and_invalid_config_rejected(self):
         token = {"X-Monitor-Token": self.server.token}
         self.assertEqual(self.request("POST", "/api/config", {"nodes": []},
@@ -288,6 +442,17 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/control", {"action": "pause"}, token)[0], 200)
         self.assertTrue(self.monitor.paused)
 
+    def test_duplicate_addition_reports_merge_and_persists_one_node(self):
+        self.monitor.control("pause")
+        config = {"nodes": [{"host": "duplicate-node", "name": "one"},
+                             {"host": "duplicate-node", "name": "two", "port": 22}]}
+        status, _, body = self.request("POST", "/api/config", config, {"X-Monitor-Token": self.server.token})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["duplicates_removed"], 1)
+        self.assertEqual(len(json.loads(self.path.read_text())["nodes"]), 1)
+        self.assertEqual(len(self.monitor.workers), 1)
+        self.assertNotIn('data-field="name"', self.request("GET", "/")[2].decode())
+
     def test_manual_node_addition_is_persisted_and_monitored(self):
         token = {"X-Monitor-Token": self.server.token}
         config = {"interval": 3600, "nodes": [
@@ -298,7 +463,8 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(self.request("POST", "/api/config", config, token)[0], 200)
                 wait_until(lambda: all(node["updated_at"] for node in self.monitor.snapshot()["nodes"]))
                 saved = validate_config(json.loads(self.path.read_text()), self.path.parent)
-                self.assertEqual([node["name"] for node in saved["nodes"]], ["first", "second"])
+                self.assertEqual([node["host"] for node in saved["nodes"]], ["node-one", "node-two"])
+                self.assertTrue(all("name" not in node for node in saved["nodes"]))
                 self.assertEqual(saved["nodes"][1]["port"], 2222)
                 status, _, body = self.request("GET", "/api/state", headers=token)
                 self.assertEqual(status, 200)
@@ -308,6 +474,35 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(nodes[1]["devices"][1]["health"], "Critical")
             finally:
                 self.monitor.close()
+
+
+class PlatformTests(unittest.TestCase):
+    def test_system_product_and_readonly_fallback(self):
+        self.assertEqual(system_product("# dmidecode\nNPU_MONITOR_SYSTEM_SOURCE dmidecode\n Synthetic   Server A2 \n"),
+                         ("Synthetic Server A2", "dmidecode"))
+        self.assertEqual(system_product("dmidecode: denied\nNPU_MONITOR_SYSTEM_SOURCE sysfs\nSynthetic Server"),
+                         ("Synthetic Server", "sysfs"))
+        self.assertEqual(server_generation("Synthetic Server A2"), "A2")
+        self.assertIsNone(system_product("To Be Filled By O.E.M.")[0])
+        self.assertIsNone(server_generation("Synthetic A234"))
+
+    def test_official_board_fields_identify_a2_a3_a5(self):
+        boards = [("Chip Type : Ascend\nChip Name : 910B4", "A2"),
+                  ("Chip Name : Ascend910\nNPU Name : 9392", "A3"),
+                  ("Chip Name : Ascend950PR\nNPU Name : 9579", "A5"),
+                  ("Chip Name : Ascend950DT\nNPU Name : 9589", "A5")]
+        for board, expected in boards:
+            with self.subTest(board=board):
+                self.assertEqual(detect_platform([], board), expected)
+
+    def test_model_fallback_and_unknown_are_explicit(self):
+        self.assertEqual(model_generation("Ascend 910B4"), "A2")
+        self.assertEqual(model_generation("Ascend910_9382"), "A3")
+        self.assertEqual(model_generation("910C"), "A3")
+        self.assertEqual(model_generation("950PR"), "A5")
+        self.assertIsNone(model_generation("Ascend910"))
+        self.assertIsNone(detect_platform([{"name": "DemoNPU"}]))
+        self.assertIsNone(detect_platform([{"name": "910B4"}, {"name": "950PR"}]))
 
 
 if __name__ == "__main__":

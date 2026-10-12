@@ -5,7 +5,6 @@
   "npu_smi_path": "npu-smi",
   "nodes": [
     {
-      "name": "示例密钥节点",
       "host": "example-key-node",
       "user": "your-user",
       "port": 22,
@@ -13,7 +12,6 @@
       "identity_file": ""
     },
     {
-      "name": "示例 SSH 别名",
       "host": "example-alias",
       "user": "",
       "port": null,
@@ -21,7 +19,6 @@
       "identity_file": ""
     },
     {
-      "name": "示例密码节点",
       "host": "example-password-node",
       "user": "your-user",
       "port": 22,

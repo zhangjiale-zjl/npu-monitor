@@ -89,7 +89,7 @@ class PasswordTests(unittest.TestCase):
             calls.append((args, kwargs.get("env", {})))
             kwargs.pop("creationflags", None)
             return original([sys.executable, str(TESTS / "fake_ssh.py"), "password-ok"], **kwargs)
-        session = SSHSession(Node("test", "host", auth_type="password", password=PASSWORD), "unused-key", 3)
+        session = SSHSession(Node("host", auth_type="password", password=PASSWORD), "unused-key", 3)
         try:
             with patch("monitor.subprocess.Popen", side_effect=spawn):
                 self.assertEqual(session.query()[1], 0)
@@ -116,7 +116,7 @@ class PasswordTests(unittest.TestCase):
         def spawn(args, **kwargs):
             kwargs.pop("creationflags", None)
             return original([sys.executable, str(TESTS / "fake_ssh.py"), "password-wrong"], **kwargs)
-        session = SSHSession(Node("test", "host", auth_type="password", password=PASSWORD), "", 3)
+        session = SSHSession(Node("host", auth_type="password", password=PASSWORD), "", 3)
         try:
             with patch("monitor.subprocess.Popen", side_effect=spawn), self.assertRaises(CollectionError) as context:
                 session.query()

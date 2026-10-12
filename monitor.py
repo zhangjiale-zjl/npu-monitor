@@ -4,6 +4,7 @@
 import argparse
 import copy
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -24,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from npu_parser import parse_info
+from npu_platform import detect_platform, server_generation, system_product
 from password_auth import PasswordBroker
 
 ROOT = Path(__file__).resolve().parent
@@ -74,7 +77,6 @@ def command_path(value, optional=False):
 
 @dataclass(frozen=True)
 class Node:
-    name: str
     host: str
     user: str = ""
     port: int | None = None
@@ -82,6 +84,41 @@ class Node:
     npu_smi_path: str = ""
     auth_type: str = "key"
     password: str = field(default="", repr=False)
+    address: str = ""
+    ssh_port: int = 22
+
+    @property
+    def id(self):
+        address = self.address or normalize_address(self.host)
+        return f"[{address}]:{self.ssh_port}" if ":" in address else f"{address}:{self.ssh_port}"
+
+
+def normalize_address(address):
+    try:
+        return str(ipaddress.ip_address(address.strip("[]")))
+    except ValueError:
+        return address.lower().rstrip(".")
+
+
+def resolve_endpoint(host, user="", port=None):
+    """Read local OpenSSH configuration without opening an SSH connection."""
+    args = ["ssh", "-G", "-o", "CanonicalizeHostname=no"]
+    if user:
+        args += ["-l", user]
+    if port:
+        args += ["-p", str(port)]
+    args.append(host)
+    kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    try:
+        result = subprocess.run(args, capture_output=True, timeout=3, **kwargs)
+        if result.returncode == 0:
+            fields = dict(line.split(None, 1) for line in result.stdout.decode("utf-8", "replace").splitlines() if " " in line)
+            resolved_port = int(fields.get("port", port or 22))
+            if 1 <= resolved_port <= 65535:
+                return normalize_address(fields.get("hostname", host)), resolved_port
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return normalize_address(host), port or 22
 
 
 def validate_config(data, base, current=None):
@@ -92,9 +129,15 @@ def validate_config(data, base, current=None):
     identity = key_path(data.get("identity_file", ""), base)
     executable = command_path(data.get("npu_smi_path", "npu-smi"))
     entries = data.get("nodes", [])
-    if not isinstance(entries, list) or len(entries) > MAX_NODES:
-        raise ValueError(f"nodes 必须是数组，最多 {MAX_NODES} 个节点")
-    nodes, names = [], set()
+    if not isinstance(entries, list):
+        raise ValueError("nodes 必须是数组")
+    nodes, endpoints = [], set()
+    resolved = {}
+    def endpoint(host, user, port):
+        key = (host, user, port)
+        if key not in resolved:
+            resolved[key] = resolve_endpoint(host, user, port)
+        return resolved[key]
     previous = (current or {}).get("nodes", [])
     for entry in entries:
         if not isinstance(entry, dict):
@@ -105,34 +148,33 @@ def validate_config(data, base, current=None):
             raise ValueError("节点地址须为 IP、主机名或 SSH 配置中的 Host 别名")
         if not isinstance(user, str) or (user and not USER.fullmatch(user)):
             raise ValueError(f"{host} 的 SSH 用户名无效")
-        name = entry.get("name", host)
-        if not isinstance(name, str) or not name.strip() or len(name) > 100:
-            raise ValueError("节点名称须为 1–100 字符")
-        name = name.strip()
-        if name in names:
-            raise ValueError(f"节点名称重复：{name}")
-        names.add(name)
         port = entry.get("port")
         if port in (None, ""):
             port = None
         elif isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValueError(f"{name} 的端口须为 1–65535 的整数")
+            raise ValueError(f"{host} 的端口须为 1–65535 的整数")
+        address, ssh_port = endpoint(host, user, port)
+        if (address, ssh_port) in endpoints:
+            continue
+        if len(nodes) >= MAX_NODES:
+            raise ValueError(f"最多监控 {MAX_NODES} 个不同节点")
+        endpoints.add((address, ssh_port))
         auth_type = entry.get("auth_type", "key")
         if auth_type not in ("key", "password"):
-            raise ValueError(f"{name} 的认证方式须为 key 或 password")
-        old = next((node for node in previous if node["name"] == name), None)
-        if old is None:
-            old = next((node for node in previous if (node["host"], node["user"], node["port"]) == (host, user, port)), {})
+            raise ValueError(f"{host} 的认证方式须为 key 或 password")
+        old = next((node for node in previous if node.get("user", "") == user and
+                    endpoint(node["host"], node.get("user", ""), node.get("port")) == (address, ssh_port)), {})
         password = entry.get("password", old.get("password", ""))
         if not isinstance(password, str) or len(password.encode("utf-8")) > 4096 or any(c in password for c in "\r\n\x00"):
-            raise ValueError(f"{name} 的密码须为不含换行或空字符的字符串，最多 4096 字节")
+            raise ValueError(f"{host} 的密码须为不含换行或空字符的字符串，最多 4096 字节")
         if auth_type == "password" and not password:
-            raise ValueError(f"请填写 {name} 的 SSH 登录密码")
+            raise ValueError(f"请填写 {host} 的 SSH 登录密码")
         if auth_type == "key":
             password = ""
         identity_file = key_path(entry.get("identity_file", ""), base) if auth_type == "key" else ""
-        nodes.append(Node(name, host, user, port, identity_file,
-                          command_path(entry.get("npu_smi_path", ""), optional=True), auth_type, password))
+        nodes.append(Node(host, user, port, identity_file,
+                          command_path(entry.get("npu_smi_path", ""), optional=True), auth_type, password,
+                          address, ssh_port))
     return {"interval": interval, "timeout": timeout, "identity_file": identity,
             "npu_smi_path": executable, "nodes": [asdict(node) for node in nodes]}
 
@@ -141,6 +183,15 @@ def public_config(config):
     result = copy.deepcopy(config)
     for node in result["nodes"]:
         node["password_set"] = bool(node.pop("password", ""))
+        node["id"] = Node(**{key: value for key, value in node.items() if key != "password_set"}).id
+    return result
+
+
+def stored_config(config):
+    result = copy.deepcopy(config)
+    for node in result["nodes"]:
+        node.pop("address", None)
+        node.pop("ssh_port", None)
     return result
 
 
@@ -162,17 +213,34 @@ class SSHSession:
         self.lock = threading.Lock()
         self.closed = False
         self.broker = None
+        self.address = None
+        self.generation = 0
 
     def _start(self):
         # The remote command and the stdin protocol are fixed; node inputs never
         # enter a local shell or the remote shell script.
         script = (
-            "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/Ascend/driver/tools:$PATH; "
+            "PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/sbin:/usr/local/Ascend/driver/tools:$PATH; "
             "export PATH; LC_ALL=C; export LC_ALL; "
-            "while IFS= read -r request; do "
+            "while read -r request npu chip scope; do "
             "case \"$request\" in NPU_MONITOR_*) "
             "printf '\\n%s BEGIN\\n' \"$request\"; "
+            "printf 'NPU_MONITOR_ADDRESS %s\\n' \"$SSH_CONNECTION\"; "
             f"{shlex.quote(self.executable)} info </dev/null 2>&1; rc=$?; "
+            "printf '\\n%s END %s\\n' \"$request\" \"$rc\";; "
+            "NPU_BOARD_*) case \"$npu:$chip\" in *[!0-9:]*|:*|*:) exit 2;; esac; "
+            "printf '\\n%s BEGIN\\n' \"$request\"; "
+            "if [ \"$scope\" = device ]; then "
+            f"{shlex.quote(self.executable)} info -t board -i \"$npu\" </dev/null 2>&1; "
+            "else "
+            f"{shlex.quote(self.executable)} info -t board -i \"$npu\" -c \"$chip\" </dev/null 2>&1; "
+            "fi; rc=$?; printf '\\n%s END %s\\n' \"$request\" \"$rc\";; "
+            "NPU_SYSTEM_*) printf '\\n%s BEGIN\\n' \"$request\"; "
+            "printf 'NPU_MONITOR_SYSTEM_SOURCE dmidecode\\n'; "
+            "dmidecode -s system-product-name </dev/null 2>&1; rc=$?; "
+            "if [ \"$rc\" != 0 ] && [ -r /sys/class/dmi/id/product_name ]; then "
+            "printf 'NPU_MONITOR_SYSTEM_SOURCE sysfs\\n'; "
+            "cat /sys/class/dmi/id/product_name 2>&1; rc=$?; fi; "
             "printf '\\n%s END %s\\n' \"$request\" \"$rc\";; "
             "*) exit 2;; esac; done"
         )
@@ -216,6 +284,7 @@ class SSHSession:
                     broker.close()
                 raise CollectionError("采集已停止")
             self.process, self.lines, self.broker = process, lines, broker
+            self.generation += 1
         threading.Thread(target=self._read, args=(process, lines), daemon=True).start()
         return process, lines
 
@@ -265,6 +334,21 @@ class SSHSession:
         self._disconnect()
 
     def query(self):
+        return self._request("NPU_MONITOR_" + secrets.token_hex(16))
+
+    def query_board(self, device, deadline, device_scope=False):
+        # IDs are parsed integers; only this fixed query can enter the protocol.
+        npu, chip = int(device["npu_id"]), int(device["chip_id"])
+        if npu < 0 or chip < 0:
+            raise ValueError("NPU / Chip ID 无效")
+        request = "NPU_BOARD_" + secrets.token_hex(16)
+        scope = "device" if device_scope else "chip"
+        return self._request(request, f" {npu} {chip} {scope}", deadline)
+
+    def query_system(self, deadline):
+        return self._request("NPU_SYSTEM_" + secrets.token_hex(16), deadline=deadline)
+
+    def _request(self, request, arguments="", deadline=None):
         with self.lock:
             if self.closed:
                 raise CollectionError("采集已停止")
@@ -273,10 +357,9 @@ class SSHSession:
         try:
             if process is None:
                 process, lines = self._start()
-            request = "NPU_MONITOR_" + secrets.token_hex(16)
-            process.stdin.write((request + "\n").encode("ascii"))
+            process.stdin.write((request + arguments + "\n").encode("ascii"))
             process.stdin.flush()
-            deadline = time.monotonic() + self.timeout
+            deadline = deadline or time.monotonic() + self.timeout
             began = False
             while True:
                 remaining = deadline - time.monotonic()
@@ -307,7 +390,15 @@ class SSHSession:
                         return result, rc
                     return result, 0
                 elif began:
-                    raw.append(line)
+                    if line.startswith("NPU_MONITOR_ADDRESS "):
+                        connection = line.split()
+                        if len(connection) == 5:
+                            try:
+                                self.address = str(ipaddress.ip_address(connection[3]))
+                            except ValueError:
+                                pass
+                    else:
+                        raw.append(line)
                 else:
                     prelude.append(line)
         except CollectionError:
@@ -339,9 +430,15 @@ class Worker:
         self.signature = (node, identity, timeout, executable)
         self.session = SSHSession(node, identity, timeout, ssh, executable)
         self.stop_event, self.wake = threading.Event(), threading.Event()
-        self.thread = threading.Thread(target=self.run, name=f"npu-{node.name}", daemon=True)
+        self.thread = threading.Thread(target=self.run, name=f"npu-{node.id}", daemon=True)
         self.tick = 0
-        self.state = {"name": node.name, "host": node.host, "status": "pending",
+        self.next_platform_query = 0
+        self.next_system_query = 0
+        self.platform_generation = -1
+        self.state = {"id": node.id, "name": f"未知环境 - {node.address or node.host}",
+                      "host": node.host, "address": node.address or node.host, "platform": None,
+                      "platform_error": None, "board_raw": "", "status": "pending",
+                      "server_model": None, "server_model_source": None, "server_model_error": None,
                       "error": None, "warning": None, "exit_code": None, "raw": "",
                       "devices": [], "processes": [], "version": None, "history": [], "updated_at": None,
                       "last_success_at": None, "collecting": False, "duration_ms": None}
@@ -363,25 +460,72 @@ class Worker:
             start = time.monotonic()
             with self.monitor.lock:
                 self.state["collecting"] = True
+            result = {}
             try:
                 if self.monitor.demo:
-                    index = 0 if self.node.name == "训练节点" else 1
+                    index = list(self.monitor.workers).index(self.node.id)
                     raw, rc = demo_output(index, self.tick), 0
                     self.tick += 1
                 else:
                     raw, rc = self.session.query()
+                    if self.platform_generation != self.session.generation:
+                        self.next_platform_query = 0
+                        self.next_system_query = 0
+                        self.platform_generation = self.session.generation
+                address = self.session.address or self.node.address or self.node.host
+                model = self.state["server_model"]
+                deadline = start + self.session.timeout
+                if self.monitor.demo:
+                    model = f"演示服务器 {['A2', 'A3', 'A5'][index % 3]}"
+                    result.update(server_model=model, server_model_source="demo", server_model_error=None)
+                elif time.monotonic() >= self.next_system_query and deadline - time.monotonic() > 0.2:
+                    try:
+                        system_raw, system_rc = self.session.query_system(deadline)
+                        if system_rc:
+                            result["server_model_error"] = f"服务器型号查询返回 {system_rc}"
+                        else:
+                            model, source = system_product(system_raw)
+                            result.update(server_model=model, server_model_source=source,
+                                          server_model_error=None if model else "服务器型号暂未识别")
+                    except CollectionError as exc:
+                        result["server_model_error"] = f"服务器型号查询失败：{exc}"
+                    self.next_system_query = float("inf") if model and not result.get("server_model_error") else time.monotonic() + 60
+                platform = self.state["platform"] or server_generation(model)
+                result.update(platform=platform, address=address, name=f"{platform or '未知环境'} - {address}")
                 if rc:
                     raise CollectionError(f"npu-smi info 返回 {rc}，请查看原始输出", raw, rc)
                 parsed = parse_info(raw)
-                result = {**parsed, "raw": raw, "status": "warning" if parsed["warning"] else "ok",
-                          "error": None, "exit_code": 0}
+                result.update({**parsed, "raw": raw, "status": "warning" if parsed["warning"] else "ok",
+                               "error": None, "exit_code": 0})
+                platform = detect_platform(parsed["devices"], self.state["board_raw"]) or platform
+                if self.monitor.demo:
+                    platform = ["A2", "A3", "A5"][index % 3]
+                elif parsed["devices"] and time.monotonic() >= self.next_platform_query:
+                    # Query once per connection, retry unresolved hardware at most once a minute.
+                    if deadline - time.monotonic() > 0.2:
+                        device = parsed["devices"][0]
+                        device_scope = platform == "A5"
+                        try:
+                            board, board_rc = self.session.query_board(device, deadline, device_scope)
+                            if board_rc and deadline - time.monotonic() > 0.2:
+                                board, board_rc = self.session.query_board(device, deadline, not device_scope)
+                            if board_rc:
+                                result["platform_error"] = f"型号查询返回 {board_rc}"
+                            else:
+                                platform = detect_platform(parsed["devices"], board) or server_generation(model)
+                                result.update(board_raw=board, platform_error=None if platform else "型号暂未识别")
+                        except (CollectionError, ValueError) as exc:
+                            result["platform_error"] = f"型号查询失败：{exc}"
+                        self.next_platform_query = float("inf") if platform and not result.get("platform_error") else time.monotonic() + 60
+                result.update(platform=platform, address=address,
+                              name=f"{platform or '未知环境'} - {address}")
             except CollectionError as exc:
-                result = {"status": "error", "error": str(exc), "warning": None,
+                result.update({"status": "error", "error": str(exc), "warning": None,
                           "exit_code": exc.exit_code, "raw": exc.raw,
-                          "devices": [], "processes": [], "version": None}
+                          "devices": [], "processes": [], "version": None})
             except Exception as exc:
-                result = {"status": "error", "error": f"采集失败：{exc}", "warning": None,
-                          "exit_code": None, "raw": "", "devices": [], "processes": [], "version": None}
+                result.update({"status": "error", "error": f"采集失败：{exc}", "warning": None,
+                               "exit_code": None, "raw": "", "devices": [], "processes": [], "version": None})
             if self.stop_event.is_set():
                 break
             stamp = now()
@@ -414,7 +558,7 @@ class Monitor:
             if persist and not self.demo:
                 # Replace atomically; private key contents are never read.
                 temporary = self.path.with_name(self.path.name + ".tmp")
-                temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                temporary.write_text(json.dumps(stored_config(config), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 if os.name != "nt":
                     temporary.chmod(0o600)
                 os.replace(temporary, self.path)
@@ -425,11 +569,11 @@ class Monitor:
                     identity = node.identity_file or config["identity_file"]
                     executable = node.npu_smi_path or config["npu_smi_path"]
                     signature = (node, identity, config["timeout"], executable)
-                    worker = old.get(node.name)
+                    worker = old.get(node.id)
                     if not worker or worker.signature != signature:
                         worker = Worker(self, node, identity, config["timeout"], self.ssh, executable)
                         created.append(worker)
-                    new[node.name] = worker
+                    new[node.id] = worker
                 self.config, self.workers = config, new
                 retired = [worker for worker in old.values() if worker not in new.values()]
             for worker in retired:
@@ -442,9 +586,13 @@ class Monitor:
 
     def snapshot(self):
         with self.lock:
+            config = public_config(self.config)
+            for node in config["nodes"]:
+                node["name"] = self.workers[node["id"]].state["name"]
             return copy.deepcopy({"demo": self.demo, "paused": self.paused,
                                   "auth_password_supported": True,
-                                  "config": public_config(self.config), "server_time": now(),
+                                  "auto_node_names": True,
+                                  "config": config, "server_time": now(),
                                   "nodes": [w.state for w in self.workers.values()]})
 
     def control(self, action):
@@ -472,6 +620,12 @@ class Monitor:
 
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, port, monitor):
         super().__init__(("127.0.0.1", port), Handler)
@@ -544,6 +698,8 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.monitor.change_lock:
                     config = validate_config(data, self.server.monitor.path.parent, self.server.monitor.config)
                     self.server.monitor.reconfigure(config)
+                    self.reply(200, {"ok": True, "duplicates_removed": len(data.get("nodes", [])) - len(config["nodes"])})
+                    return
             elif path == "/api/control":
                 if not isinstance(data, dict):
                     raise ValueError("请求必须是 JSON 对象")
@@ -574,8 +730,7 @@ def main():
     path = args.config.expanduser().resolve()
     try:
         if args.demo:
-            data = {"interval": 5, "nodes": [{"name": "训练节点", "host": "demo-training"},
-                                             {"name": "空闲节点", "host": "demo-idle"}]}
+            data = {"interval": 5, "nodes": [{"host": "demo-a2"}, {"host": "demo-a3"}, {"host": "demo-a5"}]}
         else:
             data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {"nodes": []}
         if not isinstance(data, dict):
@@ -586,7 +741,7 @@ def main():
                 data[field] = value
         for target in args.node:
             user, host = target.rsplit("@", 1) if "@" in target else ("", target)
-            data.setdefault("nodes", []).append({"name": host, "host": host, "user": user})
+            data.setdefault("nodes", []).append({"host": host, "user": user})
         config = validate_config(data, path.parent)
         if not args.demo and not shutil.which("ssh"):
             raise ValueError("未找到 ssh，请先启用系统 OpenSSH 客户端")

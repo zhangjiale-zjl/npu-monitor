@@ -152,18 +152,19 @@ function nodeCard(node) {
   const card = el("article", "node-card");
   const head = el("div", "node-head");
   const identity = el("div", "node-identity");
-  const title = el("h3", "", node.name);
+  const title = el("h4", "", node.name);
   const badHealth = node.devices.some(d => d.health !== "OK");
   title.append(el("span", "status-pill " + (badHealth ? "error" : node.status), statusText(node)));
-  const config = state.config.nodes.find(n => n.name === node.name);
+  const config = state.config.nodes.find(n => n.id === node.id);
   const models = [...new Set(node.devices.map(device => device.name))].join(" / ");
   identity.append(title, el("div", "node-address", (config?.user ? `${config.user}@` : "") + node.host + (config?.port ? `:${config.port}` : "") + (models ? ` · ${models}` : "")));
+  title.title = node.platform_error || `环境型号：${node.platform || "尚未识别"}`;
   const right = el("div", "node-head-right");
   const update = el("div", "node-update");
   update.append(el("div", "", node.collecting ? "正在采集…" : timeText(node.updated_at)), el("div", "", `${node.devices.length} 芯片 · 平均 ${fmt(avg(node.devices), 1)}%`));
   const edit = el("button", "edit-node subtle", "编辑");
   edit.setAttribute("aria-label", `编辑节点 ${node.name}`);
-  edit.addEventListener("click", () => openSettings({name: node.name}));
+  edit.addEventListener("click", () => openSettings({id: node.id}));
   right.append(update, edit);
   head.append(identity, right);
   const body = el("div", "node-body");
@@ -183,9 +184,12 @@ function nodeCard(node) {
     body.append(deviceTable(node.devices, node.name));
   }
   const details = el("div", "node-details");
-  const extra = detail(node.name, "extra", `详细信息 · ${node.processes.length} 条进程`);
+  const extra = detail(node.id, "extra", `详细信息 · ${node.processes.length} 条进程`);
+  extra.append(el("p", "no-process", node.server_model
+    ? `服务器型号：${node.server_model} · 来源：${node.server_model_source === "sysfs" ? "系统 DMI 文件" : node.server_model_source === "demo" ? "演示数据" : "dmidecode"}`
+    : (node.server_model_error || "等待服务器型号查询")));
   if (node.devices.length) {
-    const memory = detail(node.name, "memory", "内存明细 · 已用 / 总量");
+    const memory = detail(node.id, "memory", "内存明细 · 已用 / 总量");
     const table = el("table");
     table.setAttribute("aria-label", `${node.name} 每张 NPU 卡的内存用量`);
     const thead = el("thead"); const heading = el("tr");
@@ -216,7 +220,13 @@ function nodeCard(node) {
     plot.append(caption, sparkline(node.history));
     extra.append(plot);
   }
-  const processes = detail(node.name, "processes", `查看进程 · ${node.processes.length} 条`);
+  if (node.platform_error) extra.append(el("p", "no-process", node.platform_error));
+  if (node.board_raw) {
+    const board = detail(node.id, "board", "查看环境型号查询结果");
+    board.append(el("pre", "", node.board_raw));
+    extra.append(board);
+  }
+  const processes = detail(node.id, "processes", `查看进程 · ${node.processes.length} 条`);
   if (node.processes.length) {
     const table = el("table");
     const thead = el("thead"); const tr = el("tr");
@@ -233,12 +243,39 @@ function nodeCard(node) {
   } else {
     processes.append(el("p", "no-process", "当前输出未列出可识别的进程；完整信息见原始输出。"));
   }
-  const raw = detail(node.name, "raw", `查看原始输出 · npu-smi info${node.version ? " · " + node.version : ""}`);
+  const raw = detail(node.id, "raw", `查看原始输出 · npu-smi info${node.version ? " · " + node.version : ""}`);
   raw.append(el("pre", "", node.raw || node.error || "尚未收到输出"));
   extra.append(processes, raw);
   details.append(extra);
   card.append(head, body, details);
   return card;
+}
+
+function modelGroups(nodes) {
+  const groups = new Map();
+  nodes.forEach(node => {
+    const model = node.server_model || "型号未识别";
+    if (!groups.has(model)) groups.set(model, []);
+    groups.get(model).push(node);
+  });
+  return [...groups].sort(([a, left], [b, right]) => a === "型号未识别" ? 1 : b === "型号未识别" ? -1
+    : right.length - left.length || a.localeCompare(b, "zh-CN", {numeric: true}));
+}
+
+function modelSection(model, nodes) {
+  const section = el("section", "model-group");
+  if (nodes.length > 2) section.classList.add("model-wide");
+  else if (nodes.length === 2) section.classList.add("model-double");
+  section.setAttribute("aria-label", `${model} 节点分区`);
+  const heading = el("div", "model-heading");
+  heading.append(el("h3", "", model));
+  const chips = nodes.reduce((sum, node) => sum + node.devices.length, 0);
+  const failed = nodes.filter(node => node.status === "error" || node.status === "warning").length;
+  heading.append(el("span", "", `${nodes.length} 节点 · ${chips} 芯片${failed ? ` · ${failed} 采集异常` : ""}`));
+  const grid = el("div", "nodes-grid");
+  grid.append(...nodes.map(nodeCard));
+  section.append(heading, grid);
+  return section;
 }
 
 function render() {
@@ -254,13 +291,14 @@ function render() {
   const nodes = state.nodes;
   const devices = nodes.flatMap(n => n.devices);
   const online = nodes.filter(n => n.status === "ok").length;
+  const groups = modelGroups(nodes);
   $("view-title").textContent = "全部节点 · NPU 总览";
-  $("view-description").textContent = state.paused ? "采集已暂停，显示所有节点的最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · 内存显示占用率，详情查看容量`;
+  $("view-description").textContent = state.paused ? "采集已暂停，按机型展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · 按服务器型号分区`;
   $("summary").replaceChildren();
   for (const [label,value] of [["节点", nodes.length], ["NPU / 芯片", devices.length], ["Health 非 OK", devices.filter(d => d.health !== "OK").length], ["采集异常", nodes.filter(n => n.status === "error" || n.status === "warning").length]]) {
     const item = el("div", "summary-item", label); item.prepend(el("strong", "", value)); $("summary").append(item);
   }
-  $("nodes").replaceChildren(...nodes.map(nodeCard));
+  $("nodes").replaceChildren(...groups.map(([model, members]) => modelSection(model, members)));
   $("empty").hidden = state.nodes.length > 0;
 }
 
@@ -289,6 +327,8 @@ async function poll() {
 function addConfigNode(node = {}) {
   const fragment = $("config-node-template").content.cloneNode(true);
   const fieldset = fragment.querySelector("fieldset");
+  fieldset.dataset.id = node.id || "";
+  fieldset.querySelector("legend").textContent = node.name || "新节点 · 自动识别环境型号";
   fieldset.querySelectorAll("[data-field]").forEach(input => {
     const field = input.dataset.field;
     input.value = field === "password" ? "" : field === "auth_type" ? (node.auth_type || "key") : (node[field] ?? "");
@@ -310,7 +350,7 @@ function addConfigNode(node = {}) {
   return fieldset;
 }
 
-function openSettings({add = false, name = null} = {}) {
+function openSettings({add = false, id = null} = {}) {
   if (!state) { notify("请先启动本地服务。", true); return; }
   $("default-key").value = state.config.identity_file;
   $("npu-path").value = state.config.npu_smi_path || "npu-smi";
@@ -319,8 +359,7 @@ function openSettings({add = false, name = null} = {}) {
   state.config.nodes.forEach(addConfigNode);
   let target;
   if (add || !state.config.nodes.length) target = addConfigNode();
-  if (name) target = [...$("config-nodes").querySelectorAll("fieldset")].find(fieldset =>
-    fieldset.querySelector('[data-field="name"]').value === name);
+  if (id) target = [...$("config-nodes").querySelectorAll("fieldset")].find(fieldset => fieldset.dataset.id === id);
   $("config-error").hidden = true;
   $("config-note").textContent = state.demo ? "演示模式：配置不写入文件" : "保存到启动时指定的配置文件";
   $("settings-dialog").showModal();
@@ -345,7 +384,6 @@ $("config-form").addEventListener("submit", async event => {
         node[field] = field === "port" ? (input.value ? Number(input.value) : null) : input.value.trim();
       }
     });
-    node.name = node.name || node.host;
     return node;
   });
   $("save-config").disabled = true;
@@ -353,9 +391,11 @@ $("config-form").addEventListener("submit", async event => {
     if (nodes.some(node => node.auth_type === "password") && !state.auth_password_supported) {
       throw new Error("请重新启动更新后的监控工具，再使用密码登录。");
     }
-    await api("/api/config", {...state.config, timeout: Number($("timeout").value), identity_file: $("default-key").value.trim(), npu_smi_path: $("npu-path").value.trim(), nodes});
+    if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
+    const saved = await api("/api/config", {...state.config, timeout: Number($("timeout").value), identity_file: $("default-key").value.trim(), npu_smi_path: $("npu-path").value.trim(), nodes});
     $("settings-dialog").close();
-    notify(state.demo ? "演示配置已应用。" : "节点配置已保存。");
+    const merged = saved.duplicates_removed ? ` 已合并 ${saved.duplicates_removed} 个重复节点，保留首次配置。` : "";
+    notify((state.demo ? "演示配置已应用。" : "节点配置已保存。") + merged);
     await poll();
   } catch (error) {
     $("config-error").textContent = error.message;
