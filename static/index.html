@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="monitor-token" content="__MONITOR_TOKEN__">
+  <title>NPU 节点监控</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand"><span class="brand-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><h1>NPU 节点监控</h1><p>本地看板 · SSH 采集</p></div></div>
+    <div class="connection"><span class="dot" id="server-dot"></span><span id="connection-text">连接本地服务…</span><span class="badge demo" id="demo-label" hidden>演示数据</span></div>
+  </header>
+  <div class="toolbar">
+    <form id="interval-form"><label for="interval">监控周期</label><div class="input-unit"><input id="interval" type="number" min="1" max="3600" step="any" value="5" required><span>秒</span></div><button type="submit" class="subtle">应用</button></form>
+    <span class="toolbar-note" id="poll-state">等待采集</span>
+    <div class="toolbar-actions"><button id="refresh" class="subtle">立即采集</button><button id="pause" class="subtle">暂停采集</button><button id="settings" class="subtle">管理节点</button><button id="new-node" class="primary">＋ 添加节点</button></div>
+  </div>
+  <div class="notice" id="notice" role="status" hidden></div>
+  <main class="workspace">
+    <section class="content" aria-label="NPU 监控数据">
+      <div class="overview"><div><h2 id="view-title">全部节点 · NPU 总览</h2><p id="view-description">等待节点数据</p></div><div class="summary" id="summary"></div></div>
+      <div id="nodes" class="nodes-grid"></div>
+      <div id="empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▦</div><h3>添加需要监控的节点</h3><p>填写节点地址，沿用本机 SSH 配置或指定私钥文件。</p><button id="empty-settings" class="primary">＋ 添加节点</button></div>
+    </section>
+  </main>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form id="config-form">
+      <div class="dialog-head"><div><h2 id="settings-title">节点配置</h2><p>配置保存在本机，保存后立即生效。</p></div><button type="button" id="close-settings" class="icon-button" aria-label="关闭节点配置">×</button></div>
+      <div class="dialog-body">
+        <div class="defaults"><label>默认私钥文件<input id="default-key" placeholder="留空使用本机 SSH 配置 / ssh-agent" autocomplete="off"></label><label>npu-smi 路径<input id="npu-path" placeholder="npu-smi" required></label><label>采集超时（秒）<input id="timeout" type="number" min="1" max="300" step="any" required></label></div>
+        <p class="help">每个节点可选择密钥或密码登录。密钥登录使用本机私钥，加密私钥请先加入 <code>ssh-agent</code>。密码以明文保存在本机配置文件，界面仅显示是否已设置；编辑时留空保留已有密码，切换到密钥登录会清除已存密码。</p>
+        <div class="config-heading"><h3>监控节点</h3><button type="button" id="add-node" class="subtle">＋ 添加节点</button></div>
+        <div id="config-nodes"></div>
+        <p class="help">地址支持 IP、主机名及 SSH Host 别名。用户名、端口留空时使用本机 SSH 配置；密钥登录时节点私钥覆盖默认私钥，密码登录仅使用所填密码。两种方式均校验服务器指纹。</p>
+        <div id="config-error" role="alert" hidden></div>
+      </div>
+      <div class="dialog-footer"><span id="config-note">保存到 nodes.json</span><button type="button" id="cancel-settings" class="subtle">取消</button><button type="submit" id="save-config" class="primary">保存配置</button></div>
+    </form>
+  </dialog>
+  <template id="config-node-template"><fieldset class="config-node"><legend>节点</legend><div class="node-fields"><label>名称（可选）<input data-field="name" maxlength="100" placeholder="留空使用节点地址"></label><label>地址 / SSH 别名<input data-field="host" placeholder="节点地址或 SSH 别名" required></label><label>用户名<input data-field="user" placeholder="SSH 配置" autocomplete="off"></label><label>端口<input data-field="port" type="number" min="1" max="65535" placeholder="SSH 配置"></label></div><div class="node-auth"><label>认证方式<select data-field="auth_type" aria-label="认证方式"><option value="key">密钥登录</option><option value="password">密码登录</option></select></label><label class="password-field" hidden>节点密码<input data-field="password" type="password" placeholder="输入 SSH 登录密码" autocomplete="off"></label></div><div class="node-key"><label>节点私钥文件<input data-field="identity_file" placeholder="留空使用默认私钥" autocomplete="off"></label><label>节点 npu-smi 路径<input data-field="npu_smi_path" placeholder="留空使用默认路径" autocomplete="off"></label><button type="button" class="remove-node subtle">移除</button></div></fieldset></template>
+</body>
+</html>

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "$NPU_MONITOR_PYTHON" "$NPU_MONITOR_ASKPASS_SCRIPT" "$@"

@@ -1,0 +1,32 @@
+{
+  "interval": 5,
+  "timeout": 15,
+  "identity_file": "",
+  "npu_smi_path": "npu-smi",
+  "nodes": [
+    {
+      "name": "示例密钥节点",
+      "host": "example-key-node",
+      "user": "your-user",
+      "port": 22,
+      "auth_type": "key",
+      "identity_file": ""
+    },
+    {
+      "name": "示例 SSH 别名",
+      "host": "example-alias",
+      "user": "",
+      "port": null,
+      "auth_type": "key",
+      "identity_file": ""
+    },
+    {
+      "name": "示例密码节点",
+      "host": "example-password-node",
+      "user": "your-user",
+      "port": 22,
+      "auth_type": "password",
+      "password": "replace-with-node-password"
+    }
+  ]
+}
