@@ -630,6 +630,47 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/control", {"action": "pause"}, token)[0], 200)
         self.assertTrue(self.monitor.paused)
 
+    def test_directory_order_saves_only_order_and_preserves_node_connections(self):
+        self.monitor.control("pause")
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: (host, port)):
+            config = validate_config({"interval": 17, "timeout": 9,
+                "nodes": [{"host": "sort-first", "auth_type": "password", "password": "synthetic-sort-password"},
+                          {"host": "sort-second", "user": "synthetic-user", "port": 2222}],
+                "node_order": {"Synthetic A": ["sort-second:2222", "sort-first:22"]}}, TESTS)
+        self.monitor.reconfigure(config)
+        workers = dict(self.monitor.workers)
+        before = json.loads(self.path.read_text())
+        token = {"X-Monitor-Token": self.server.token}
+        data = {"model_order": ["Synthetic Z", "Synthetic A", "Synthetic Z"], "nodes": [], "interval": 1}
+        status, _, body = self.request("POST", "/api/model-order", data, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True, "model_order": ["Synthetic Z", "Synthetic A"]})
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved.pop("model_order"), ["Synthetic Z", "Synthetic A"])
+        before.pop("model_order")
+        self.assertEqual(saved, before)
+        self.assertTrue(self.monitor.paused)
+        self.assertTrue(all(self.monitor.workers[key] is worker for key, worker in workers.items()))
+        self.assertEqual(self.monitor.snapshot()["config"]["model_order"], ["Synthetic Z", "Synthetic A"])
+        self.assertNotIn("synthetic-sort-password", body.decode())
+
+    def test_directory_order_requires_token_and_rejects_invalid_order(self):
+        self.assertEqual(self.request("POST", "/api/model-order", {"model_order": []})[0], 403)
+        token = {"X-Monitor-Token": self.server.token}
+        for data in [None, [], {}, {"model_order": "Model"}, {"model_order": [""]}]:
+            with self.subTest(data=data):
+                self.assertEqual(self.request("POST", "/api/model-order", data, token)[0], 400)
+        self.assertEqual(self.monitor.config["model_order"], [])
+        self.assertFalse(self.path.exists())
+
+    def test_directory_order_save_failure_keeps_previous_order(self):
+        token = {"X-Monitor-Token": self.server.token}
+        with patch.object(self.monitor, "save_config", side_effect=OSError("synthetic write failure")):
+            status, _, _ = self.request("POST", "/api/model-order", {"model_order": ["Synthetic Z"]}, token)
+        self.assertEqual(status, 500)
+        self.assertEqual(self.monitor.config["model_order"], [])
+        self.assertFalse(self.path.exists())
+
     def test_duplicate_addition_reports_merge_and_persists_one_node(self):
         self.monitor.control("pause")
         config = {"nodes": [{"host": "duplicate-node", "name": "one"},

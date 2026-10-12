@@ -15,6 +15,10 @@ let directoryFocused = false;
 let directoryHoverTimer;
 let directoryWidth = 168;
 let directoryResize = null;
+let directoryDrag = null;
+let directorySaving = false;
+let directoryOrderRevision = 0;
+let directoryClickSuppressedUntil = 0;
 const directoryDesktopMedia = window.matchMedia("(min-width: 761px)");
 const directoryHoverMedia = window.matchMedia("(min-width: 761px) and (hover: hover) and (pointer: fine)");
 try {
@@ -43,7 +47,8 @@ function saveDirectoryWidth(width) {
 }
 
 function applyDirectoryState() {
-  const floating = directoryCollapsed && directoryHoverMedia.matches && (directoryHovered || directoryFocused || directoryResize !== null);
+  const floating = directoryCollapsed && directoryHoverMedia.matches
+    && (directoryHovered || directoryFocused || directoryResize !== null || directoryDrag !== null || directorySaving);
   $("model-sidebar").classList.toggle("collapsed", directoryCollapsed);
   $("model-sidebar").classList.toggle("floating-open", floating);
   $("model-directory-content").hidden = directoryCollapsed && !floating;
@@ -64,6 +69,7 @@ function cancelDirectoryHover() {
 }
 
 $("sidebar-toggle").addEventListener("click", () => {
+  if (directoryDrag || directorySaving) return;
   finishDirectoryResize();
   directoryCollapsed = !directoryCollapsed;
   cancelDirectoryHover();
@@ -82,7 +88,7 @@ $("model-sidebar").addEventListener("pointerenter", event => {
   }, 500);
 });
 $("model-sidebar").addEventListener("pointerleave", () => {
-  if (directoryResize) return;
+  if (directoryResize || directoryDrag) return;
   cancelDirectoryHover();
   applyDirectoryState();
 });
@@ -103,7 +109,7 @@ directoryHoverMedia.addEventListener("change", () => {
 });
 const directoryResizeHandle = $("directory-resize");
 directoryResizeHandle.addEventListener("pointerdown", event => {
-  if (event.button !== 0 || !directoryDesktopMedia.matches || directoryResize) return;
+  if (event.button !== 0 || !directoryDesktopMedia.matches || directoryResize || directoryDrag || directorySaving) return;
   event.preventDefault();
   clearTimeout(directoryHoverTimer);
   directoryHoverTimer = null;
@@ -471,7 +477,7 @@ function modelGroups(nodes) {
 }
 
 function markDirectorySelection() {
-  $("model-directory").querySelectorAll("button").forEach(button => {
+  $("model-directory").querySelectorAll(".model-filter").forEach(button => {
     const selected = button.dataset.model === (selectedModel ?? "");
     button.classList.toggle("selected", selected);
     button.setAttribute("aria-pressed", String(selected));
@@ -487,18 +493,143 @@ function directoryButton(label, count, model) {
   button.append(el("span", "model-label", label), el("span", "model-count", count));
   button.title = `${label} · ${count} 个节点`;
   button.addEventListener("click", () => {
+    if (performance.now() < directoryClickSuppressedUntil) return;
     selectedModel = model;
     render();
   });
   return button;
 }
 
+async function saveDirectoryOrder(model, focus = false) {
+  const previous = [...(state.config.model_order || [])];
+  const order = [...$("model-directory").querySelectorAll(".directory-model")].map(row => row.dataset.model);
+  directorySaving = true;
+  directoryOrderRevision++;
+  state.config.model_order = order;
+  $("model-directory").querySelectorAll(".directory-order-handle").forEach(handle => { handle.disabled = true; });
+  applyDirectoryState();
+  render();
+  try {
+    const saved = await api("/api/model-order", {model_order: order});
+    state.config.model_order = saved.model_order;
+    $("directory-order-status").textContent = "机型顺序已自动保存。";
+    notify(state.demo ? "演示机型顺序已自动应用。" : "机型顺序已自动保存。");
+  } catch (error) {
+    state.config.model_order = previous;
+    $("directory-order-status").textContent = "机型顺序保存失败，请重试。";
+    notify(`机型顺序保存失败：${error.message}，请重试。`, true);
+  } finally {
+    directorySaving = false;
+    directorySignature = "";
+    lastRender = "";
+    render();
+    if (focus) {
+      const row = [...$("model-directory").querySelectorAll(".directory-model")].find(entry => entry.dataset.model === model);
+      row?.querySelector(".directory-order-handle").focus();
+    }
+    applyDirectoryState();
+  }
+}
+
+function moveDirectoryDrag() {
+  const drag = directoryDrag;
+  if (!drag?.moved) return;
+  const columns = getComputedStyle(drag.list).gridTemplateColumns.split(" ").length;
+  const before = [...drag.list.children].find(row => {
+    if (row === drag.row) return false;
+    const bounds = row.getBoundingClientRect();
+    if (columns > 1 && drag.clientY >= bounds.top && drag.clientY <= bounds.bottom) return drag.clientX < bounds.left + bounds.width / 2;
+    return drag.clientY < bounds.top + bounds.height / 2;
+  });
+  if (before !== drag.row.nextElementSibling) drag.list.insertBefore(drag.row, before || null);
+}
+
+function scrollDirectoryDrag() {
+  const drag = directoryDrag;
+  if (!drag) return;
+  const content = $("model-directory-content");
+  const bounds = content.getBoundingClientRect();
+  const speed = drag.clientY < bounds.top + 25 ? -8 : drag.clientY > bounds.bottom - 25 ? 8 : 0;
+  if (speed) { content.scrollTop += speed; moveDirectoryDrag(); }
+  drag.frame = requestAnimationFrame(scrollDirectoryDrag);
+}
+
+function finishDirectoryDrag(event) {
+  if (!directoryDrag || (event && event.pointerId !== directoryDrag.pointerId)) return;
+  const {row, list, pointerId, moved, initialRows, frame} = directoryDrag;
+  directoryDrag = null;
+  cancelAnimationFrame(frame);
+  row.classList.remove("reordering");
+  document.body.classList.remove("directory-sorting");
+  if (list.hasPointerCapture(pointerId)) list.releasePointerCapture(pointerId);
+  if (moved) directoryClickSuppressedUntil = performance.now() + 350;
+  if (event) directoryHovered = $("model-sidebar").contains(document.elementFromPoint(event.clientX, event.clientY));
+  if (!moved) { lastRender = ""; applyDirectoryState(); return; }
+  const changed = moved && initialRows.some((entry, index) => list.children[index] !== entry);
+  if (changed && event?.type === "pointerup") void saveDirectoryOrder(row.dataset.model);
+  else {
+    initialRows.forEach(entry => list.append(entry));
+    directorySignature = "";
+    lastRender = "";
+    render();
+    applyDirectoryState();
+  }
+}
+
+function directoryModel(model, count, list) {
+  const row = el("div", "directory-model");
+  row.dataset.model = model;
+  const handle = el("button", "directory-order-handle", "⋮⋮");
+  handle.type = "button";
+  handle.title = "拖动调整机型顺序，松开自动保存；↑↓调整顺序";
+  handle.setAttribute("aria-label", `调整目录机型 ${model} 的顺序`);
+  row.append(handle, directoryButton(model, count, model));
+  row.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || directoryDrag || directorySaving || directoryResize
+        || (event.pointerType === "touch" && !handle.contains(event.target))) return;
+    event.preventDefault();
+    directoryDrag = {row, list, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+      clientX: event.clientX, clientY: event.clientY, moved: false, initialRows: [...list.children]};
+    applyDirectoryState();
+  });
+  handle.addEventListener("keydown", event => {
+    if (directorySaving || directoryDrag) return;
+    if (event.key === "ArrowUp" && row.previousElementSibling) {
+      event.preventDefault(); list.insertBefore(row, row.previousElementSibling);
+    } else if (event.key === "ArrowDown" && row.nextElementSibling) {
+      event.preventDefault(); list.insertBefore(row.nextElementSibling, row);
+    } else return;
+    void saveDirectoryOrder(model, true);
+  });
+  return row;
+}
+
+$("model-directory").addEventListener("pointermove", event => {
+  if (!directoryDrag || event.pointerId !== directoryDrag.pointerId) return;
+  const drag = directoryDrag;
+  drag.clientX = event.clientX;
+  drag.clientY = event.clientY;
+  if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+  if (!drag.moved) {
+    drag.moved = true;
+    drag.list.setPointerCapture(event.pointerId);
+    drag.row.classList.add("reordering");
+    document.body.classList.add("directory-sorting");
+    drag.frame = requestAnimationFrame(scrollDirectoryDrag);
+  }
+  moveDirectoryDrag();
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) $("model-directory").addEventListener(type, finishDirectoryDrag);
+for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, finishDirectoryDrag);
+window.addEventListener("blur", () => finishDirectoryDrag());
+
 function renderDirectory(groups) {
+  if (directoryDrag || directorySaving) return;
   const signature = JSON.stringify(groups.map(([model, nodes]) => [model, nodes.length]));
   if (signature !== directorySignature) {
     directorySignature = signature;
     const list = el("div", "model-filters");
-    groups.forEach(([model, nodes]) => list.append(directoryButton(model, nodes.length, model)));
+    groups.forEach(([model, nodes]) => list.append(directoryModel(model, nodes.length, list)));
     $("model-directory").replaceChildren(directoryButton("全部节点", state.nodes.length, null), list);
     $("directory-empty").hidden = groups.length > 0;
   }
@@ -552,16 +683,20 @@ function render() {
 }
 
 async function poll() {
-  if (polling) return;
+  if (polling || directorySaving) return;
   polling = true;
+  const revision = directoryOrderRevision;
   try {
-    state = await api("/api/state");
+    const next = await api("/api/state");
+    if (revision !== directoryOrderRevision) return;
+    state = next;
     if (serviceDisconnected) notify("本地服务已连接。");
     serviceDisconnected = false;
     $("server-dot").className = "dot";
     $("connection-text").textContent = "本地服务已连接";
     render();
   } catch (error) {
+    if (revision !== directoryOrderRevision) return;
     serviceDisconnected = true;
     $("server-dot").className = "dot error";
     $("connection-text").textContent = "本地服务已断开";

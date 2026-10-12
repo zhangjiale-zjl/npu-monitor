@@ -104,6 +104,13 @@ def resolve_endpoint(host, user="root", port=22):
     return normalize_address(host), port
 
 
+def validate_model_order(order):
+    if not isinstance(order, list) or len(order) > MAX_NODES or any(
+            not isinstance(model, str) or not model.strip() or len(model) > 200 for model in order):
+        raise ValueError("机型排序须为最多 64 个有效机型名称组成的列表")
+    return list(dict.fromkeys(order))
+
+
 def validate_config(data, base, current=None):
     if not isinstance(data, dict):
         raise ValueError("配置必须是 JSON 对象")
@@ -172,13 +179,10 @@ def validate_config(data, base, current=None):
         ids = list(dict.fromkeys(value for value in ids if value in node_ids))
         if ids:
             node_order[model] = ids
-    model_order = data.get("model_order", [])
-    if not isinstance(model_order, list) or len(model_order) > MAX_NODES or any(
-            not isinstance(model, str) or not model.strip() or len(model) > 200 for model in model_order):
-        raise ValueError("机型排序须为最多 64 个有效机型名称组成的列表")
+    model_order = validate_model_order(data.get("model_order", []))
     return {"interval": interval, "timeout": timeout, "identity_file": identity,
             "nodes": [asdict(node) for node in nodes], "node_order": node_order,
-            "model_order": list(dict.fromkeys(model_order))}
+            "model_order": model_order}
 
 
 def public_config(config):
@@ -576,13 +580,8 @@ class Monitor:
 
     def reconfigure(self, config, persist=True):
         with self.change_lock:
-            if persist and not self.demo:
-                # Replace atomically; private key contents are never read.
-                temporary = self.path.with_name(self.path.name + ".tmp")
-                temporary.write_text(json.dumps(stored_config(config), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                if os.name != "nt":
-                    temporary.chmod(0o600)
-                os.replace(temporary, self.path)
+            if persist:
+                self.save_config(config)
             with self.lock:
                 old, new, created = self.workers, {}, []
                 for entry in config["nodes"]:
@@ -605,6 +604,28 @@ class Monitor:
             for worker in new.values():
                 if worker not in created:
                     worker.wake.set()
+
+    def save_config(self, config):
+        if self.demo:
+            return
+        # Replace atomically; private key contents are never read.
+        temporary = self.path.with_name(self.path.name + ".tmp")
+        temporary.write_text(json.dumps(stored_config(config), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        os.replace(temporary, self.path)
+
+    def reorder_models(self, data):
+        if not isinstance(data, dict) or "model_order" not in data:
+            raise ValueError("请提供机型顺序")
+        order = validate_model_order(data["model_order"])
+        with self.change_lock:
+            config = copy.deepcopy(self.config)
+            config["model_order"] = order
+            self.save_config(config)
+            with self.lock:
+                self.config = config
+        return order
 
     def snapshot(self):
         with self.lock:
@@ -796,6 +817,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.monitor.reconfigure(config)
                     self.reply(200, {"ok": True, "duplicates_removed": len(data.get("nodes", [])) - len(config["nodes"])})
                     return
+            elif path == "/api/model-order":
+                order = self.server.monitor.reorder_models(data)
+                self.reply(200, {"ok": True, "model_order": order})
+                return
             elif path == "/api/control":
                 if not isinstance(data, dict):
                     raise ValueError("请求必须是 JSON 对象")
