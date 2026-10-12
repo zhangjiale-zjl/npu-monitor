@@ -36,11 +36,11 @@
   </main>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
     <form id="config-form" novalidate>
-      <div class="dialog-head"><div><h2 id="settings-title">管理节点</h2><p id="settings-description">按机型管理，点击名称展开编辑；拖动排序后保存生效。</p></div><button type="button" id="close-settings" class="icon-button" aria-label="关闭节点配置">×</button></div>
+      <div class="dialog-head"><div><h2 id="settings-title">管理节点</h2><p id="settings-description">默认按机型、IP 升序；拖动机型或节点左侧滑块调整顺序，保存后生效。</p></div><button type="button" id="close-settings" class="icon-button" aria-label="关闭节点配置">×</button></div>
       <div class="dialog-body">
         <details id="connection-defaults" class="connection-defaults"><summary>默认连接设置</summary><div class="defaults"><label>默认私钥文件<input id="default-key" placeholder="留空使用本机 SSH 配置 / ssh-agent" autocomplete="off"></label><label>采集超时（秒）<input id="timeout" type="number" min="1" max="300" step="any" required></label></div></details>
         <p class="help">用户名留空默认 root，端口留空默认 22；私钥留空沿用本机 SSH 配置。</p>
-        <div class="config-heading"><h3 id="config-nodes-title">监控节点</h3><button type="button" id="add-node" class="subtle">＋ 添加节点</button></div>
+        <div class="config-heading"><h3 id="config-nodes-title">监控节点</h3><div class="config-heading-actions"><button type="button" id="reset-model-order" class="subtle">机型按字母排序</button><button type="button" id="add-node" class="subtle">＋ 添加节点</button></div></div>
         <div id="config-nodes"></div>
         <p id="config-empty" class="help" hidden>暂无节点，点击“添加节点”填写连接信息。</p>
         <div id="config-order-status" class="visually-hidden" role="status" aria-live="polite"></div>

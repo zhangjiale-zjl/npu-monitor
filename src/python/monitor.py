@@ -172,8 +172,13 @@ def validate_config(data, base, current=None):
         ids = list(dict.fromkeys(value for value in ids if value in node_ids))
         if ids:
             node_order[model] = ids
+    model_order = data.get("model_order", [])
+    if not isinstance(model_order, list) or len(model_order) > MAX_NODES or any(
+            not isinstance(model, str) or not model.strip() or len(model) > 200 for model in model_order):
+        raise ValueError("机型排序须为最多 64 个有效机型名称组成的列表")
     return {"interval": interval, "timeout": timeout, "identity_file": identity,
-            "nodes": [asdict(node) for node in nodes], "node_order": node_order}
+            "nodes": [asdict(node) for node in nodes], "node_order": node_order,
+            "model_order": list(dict.fromkeys(model_order))}
 
 
 def public_config(config):

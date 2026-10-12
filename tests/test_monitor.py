@@ -204,6 +204,16 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(order=order), self.assertRaises(ValueError):
                 validate_config({"node_order": order}, TESTS)
 
+    def test_model_order_is_deduplicated_and_default_is_alphabetical(self):
+        self.assertEqual(validate_config({}, TESTS)["model_order"], [])
+        config = validate_config({"model_order": ["Synthetic Z", "Synthetic A", "Synthetic Z"]}, TESTS)
+        self.assertEqual(config["model_order"], ["Synthetic Z", "Synthetic A"])
+
+    def test_invalid_model_order_is_rejected(self):
+        for order in [{}, "Model", [None], [""], [" "], ["X" * 201], ["Model"] * 65]:
+            with self.subTest(order=order), self.assertRaises(ValueError):
+                validate_config({"model_order": order}, TESTS)
+
     def test_default_login_overrides_ssh_user_and_port_configuration(self):
         reply = subprocess.CompletedProcess([], 0, b"hostname 127.0.0.1\nuser other-account\nport 2200\n", b"")
         with patch("monitor.subprocess.run", return_value=reply) as run:
@@ -372,6 +382,7 @@ class WorkerTests(unittest.TestCase):
                 public = monitor.snapshot()["config"]
                 public["nodes"] = [public["nodes"][2], *public["nodes"][:2]]
                 public["node_order"] = {"Synthetic Server": [node["id"] for node in public["nodes"]]}
+                public["model_order"] = ["Synthetic Server Z", "Synthetic Server A"]
                 monitor.reconfigure(validate_config(public, base, config))
                 expected = ["order-third", "order-first", "order-second"]
                 self.assertEqual([node["host"] for node in monitor.snapshot()["nodes"]], expected)
@@ -379,6 +390,8 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(json.loads(monitor.path.read_text())["node_order"], public["node_order"])
                 loaded = validate_config(json.loads(monitor.path.read_text()), base)
                 self.assertEqual(loaded["node_order"], public["node_order"])
+                self.assertEqual(loaded["model_order"], public["model_order"])
+                self.assertEqual(monitor.snapshot()["config"]["model_order"], public["model_order"])
                 self.assertTrue(all(monitor.workers[key] is worker for key, worker in workers.items()))
             finally:
                 monitor.close()

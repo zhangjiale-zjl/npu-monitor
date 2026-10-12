@@ -446,6 +446,13 @@ function compareNodeAddresses(a, b) {
     || String(a.id || a.host || "").localeCompare(String(b.id || b.host || ""), "en", {numeric: true});
 }
 
+function compareModelNames(a, b) {
+  if (a === b) return 0;
+  const pending = name => ["型号未识别", "待识别机型"].includes(name);
+  return pending(a) !== pending(b) ? pending(a) ? 1 : -1
+    : a.localeCompare(b, "en", {sensitivity: "base"});
+}
+
 function modelGroups(nodes) {
   const groups = new Map();
   nodes.forEach(node => {
@@ -458,8 +465,9 @@ function modelGroups(nodes) {
     const rank = new Map((Array.isArray(orders[model]) ? orders[model] : []).map((id, index) => [id, index]));
     members.sort((a, b) => ((rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity)) || compareNodeAddresses(a, b));
   }
-  return [...groups].sort(([a], [b]) => a === "型号未识别" ? 1 : b === "型号未识别" ? -1
-    : a.localeCompare(b, "en", {sensitivity: "base"}));
+  const modelRank = new Map((state?.config?.model_order || []).map((model, index) => [model, index]));
+  return [...groups].sort(([a], [b]) => ((modelRank.get(a) ?? Infinity) - (modelRank.get(b) ?? Infinity))
+    || compareModelNames(a, b));
 }
 
 function markDirectorySelection() {
@@ -620,8 +628,9 @@ for (const id of ["default-key", "timeout"]) $(id).addEventListener("input", () 
 
 let settingsMode = "manage";
 let configGroups = new Map();
-let configNodeDrag = null;
+let configDrag = null;
 let settingsNodeOrder = new Map();
+let settingsModelOrder = [];
 
 function announceNodeOrder(row) {
   const list = row.parentElement;
@@ -631,22 +640,102 @@ function announceNodeOrder(row) {
   $("config-order-status").textContent = `${row.querySelector(".config-node-name").textContent} 已调整至当前机型第 ${position} 个节点，保存后生效。`;
 }
 
-function finishConfigNodeDrag(event) {
-  if (!configNodeDrag || (event && event.pointerId !== configNodeDrag.pointerId)) return;
-  const {row, list, pointerId, moved, initialRows} = configNodeDrag;
-  configNodeDrag = null;
+function finishConfigDrag(event) {
+  if (!configDrag || (event && event.pointerId !== configDrag.pointerId)) return;
+  const {row, list, pointerId, moved, initialRows, announce, frame} = configDrag;
+  configDrag = null;
+  cancelAnimationFrame(frame);
   row.classList.remove("reordering");
-  document.body.classList.remove("node-reordering");
+  document.body.classList.remove("config-reordering");
   if (list.hasPointerCapture(pointerId)) list.releasePointerCapture(pointerId);
-  if (moved && row.isConnected && initialRows.some((entry, index) => list.children[index] !== entry)) announceNodeOrder(row);
+  if (moved && row.isConnected && initialRows.some((entry, index) => list.children[index] !== entry)) announce(row);
 }
+
+function moveConfigDrag() {
+  const drag = configDrag;
+  if (!drag?.moved) return;
+  const before = [...drag.list.children].find(row => {
+    if (row === drag.row) return false;
+    const bounds = (drag.heading ? row.querySelector(drag.heading) : row).getBoundingClientRect();
+    return drag.clientY < bounds.top + bounds.height / 2;
+  });
+  if (before !== drag.row.nextElementSibling) drag.list.insertBefore(drag.row, before || null);
+}
+
+function scrollConfigDrag() {
+  const drag = configDrag;
+  if (!drag) return;
+  const body = $("settings-dialog").querySelector(".dialog-body");
+  const bounds = body.getBoundingClientRect();
+  const speed = drag.clientY < bounds.top + 35 ? -Math.min(12, (bounds.top + 35 - drag.clientY) / 3)
+    : drag.clientY > bounds.bottom - 35 ? Math.min(12, (drag.clientY - bounds.bottom + 35) / 3) : 0;
+  if (speed) { body.scrollTop += speed; moveConfigDrag(); }
+  drag.frame = requestAnimationFrame(scrollConfigDrag);
+}
+
+function configOrderHandle(handle, row, list, announce, heading = null) {
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || configDrag || $("save-config").disabled) return;
+    event.preventDefault();
+    configDrag = {row, list, announce, heading, pointerId: event.pointerId, startY: event.clientY,
+      clientY: event.clientY, moved: false, initialRows: [...list.children]};
+    list.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener("keydown", event => {
+    if ($("save-config").disabled || configDrag) return;
+    if (event.key === "ArrowUp" && row.previousElementSibling) {
+      event.preventDefault(); list.insertBefore(row, row.previousElementSibling);
+    } else if (event.key === "ArrowDown" && row.nextElementSibling) {
+      event.preventDefault(); list.insertBefore(row.nextElementSibling, row);
+    } else return;
+    handle.focus();
+    announce(row);
+  });
+}
+
+$("config-nodes").addEventListener("pointermove", event => {
+  if (!configDrag || event.pointerId !== configDrag.pointerId) return;
+  const drag = configDrag;
+  drag.clientY = event.clientY;
+  if (!drag.moved && Math.abs(event.clientY - drag.startY) < 5) return;
+  if (!drag.moved) {
+    drag.moved = true;
+    drag.row.classList.add("reordering");
+    document.body.classList.add("config-reordering");
+    drag.frame = requestAnimationFrame(scrollConfigDrag);
+  }
+  moveConfigDrag();
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) $("config-nodes").addEventListener(type, finishConfigDrag);
+
+function announceModelOrder(section) {
+  settingsModelOrder = [...$("config-nodes").children].map(group => group.dataset.model).filter(Boolean);
+  const position = settingsModelOrder.indexOf(section.dataset.model) + 1;
+  $("config-order-status").textContent = `${section.dataset.model} 已调整至第 ${position} 个机型，保存后生效。`;
+}
+
+$("reset-model-order").addEventListener("click", () => {
+  if ($("save-config").disabled) return;
+  finishConfigDrag();
+  const list = $("config-nodes");
+  [...list.children].sort((a, b) => compareModelNames(a.dataset.model, b.dataset.model)).forEach(section => list.append(section));
+  settingsModelOrder = [];
+  $("config-order-status").textContent = "机型已恢复字母升序，保存后生效。";
+});
 
 function configGroup(model) {
   if (configGroups.has(model)) return configGroups.get(model);
   const section = el("section", "config-group");
+  section.dataset.model = model;
   section.setAttribute("aria-label", `${model} 节点配置`);
   const heading = el("div", "config-group-heading");
-  heading.append(el("h3", "", model));
+  const title = el("div", "config-group-title");
+  const handle = el("button", "model-order-handle", "⋮⋮");
+  handle.type = "button";
+  handle.title = "拖动调整机型顺序；↑↓调整顺序";
+  handle.setAttribute("aria-label", `调整机型 ${model} 的顺序`);
+  title.append(handle, el("h3", "", model));
+  heading.append(title);
   const list = el("div", "config-group-nodes");
   list.dataset.model = model;
   const sort = el("button", "subtle reset-node-order", "按 IP 排序");
@@ -654,7 +743,7 @@ function configGroup(model) {
   sort.title = "恢复该机型的默认 IP 升序，保存后生效";
   sort.addEventListener("click", () => {
     if ($("save-config").disabled) return;
-    finishConfigNodeDrag();
+    finishConfigDrag();
     const value = row => {
       const fieldset = row.querySelector(".config-node");
       const host = fieldset.querySelector('[data-field="host"]').value.trim();
@@ -669,22 +758,7 @@ function configGroup(model) {
   section.append(heading, list);
   $("config-nodes").append(section);
   configGroups.set(model, list);
-  list.addEventListener("pointermove", event => {
-    if (!configNodeDrag || event.pointerId !== configNodeDrag.pointerId || configNodeDrag.list !== list) return;
-    const drag = configNodeDrag;
-    if (!drag.moved && Math.abs(event.clientY - drag.startY) < 5) return;
-    drag.moved = true;
-    drag.row.classList.add("reordering");
-    document.body.classList.add("node-reordering");
-    // Keep nodes within their machine model; move the real form to preserve edits and test results.
-    const before = [...list.children].find(row => {
-      if (row === drag.row) return false;
-      const bounds = row.getBoundingClientRect();
-      return event.clientY < bounds.top + bounds.height / 2;
-    });
-    if (before !== drag.row.nextElementSibling) list.insertBefore(drag.row, before || null);
-  });
-  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) list.addEventListener(type, finishConfigNodeDrag);
+  configOrderHandle(handle, section, $("config-nodes"), announceModelOrder, ".config-group-heading");
   return list;
 }
 
@@ -739,24 +813,9 @@ function addConfigNode(node = {}, {model = "待识别机型", open = true} = {})
   fieldset.addEventListener("input", () => {
     if (!node.id) summary.textContent = fieldset.querySelector('[data-field="host"]').value.trim() || "新节点";
   });
-  handle.addEventListener("pointerdown", event => {
-    if (event.button !== 0 || configNodeDrag || $("save-config").disabled) return;
-    event.preventDefault();
-    configNodeDrag = {row, list, pointerId: event.pointerId, startY: event.clientY, moved: false, initialRows: [...list.children]};
-    list.setPointerCapture(event.pointerId);
-  });
-  handle.addEventListener("keydown", event => {
-    if ($("save-config").disabled) return;
-    if (event.key === "ArrowUp" && row.previousElementSibling) {
-      event.preventDefault(); list.insertBefore(row, row.previousElementSibling);
-    } else if (event.key === "ArrowDown" && row.nextElementSibling) {
-      event.preventDefault(); list.insertBefore(row.nextElementSibling, row);
-    } else return;
-    handle.focus();
-    announceNodeOrder(row);
-  });
+  configOrderHandle(handle, row, list, announceNodeOrder);
   fieldset.querySelector(".remove-node").addEventListener("click", () => {
-    finishConfigNodeDrag();
+    finishConfigDrag();
     row.remove();
     if (!list.children.length) { list.parentElement.remove(); configGroups.delete(model); }
     $("config-empty").hidden = !!$("config-nodes").querySelector(".config-node");
@@ -766,15 +825,17 @@ function addConfigNode(node = {}, {model = "待识别机型", open = true} = {})
 
 function openSettings({add = false, id = null} = {}) {
   if (!state) { notify("请先启动本地服务。", true); return; }
-  finishConfigNodeDrag();
+  finishConfigDrag();
   settingsMode = add ? "add" : "manage";
   configGroups = new Map();
   settingsNodeOrder = new Map(Object.entries(state.config.node_order || {}).map(([model, ids]) => [model, [...ids]]));
+  settingsModelOrder = [...(state.config.model_order || [])];
   $("settings-title").textContent = add ? "添加节点" : "管理节点";
   $("settings-description").textContent = add ? "填写连接信息，可先测试连接再添加。"
-    : "默认按机型、IP 升序；点击名称编辑，拖动左侧滑块后保存生效。";
+    : "默认按机型、IP 升序；拖动机型或节点左侧滑块调整顺序，保存后生效。";
   $("config-nodes-title").textContent = add ? "节点信息" : "监控节点";
   $("add-node").hidden = add;
+  $("reset-model-order").hidden = add;
   $("connection-defaults").hidden = add;
   $("connection-defaults").open = false;
   $("save-config").textContent = add ? "添加节点" : "保存配置";
@@ -812,15 +873,16 @@ $("add-node").addEventListener("click", () => {
   fieldset.querySelector('[data-field="host"]').focus();
 });
 $("settings-dialog").addEventListener("close", () => {
-  finishConfigNodeDrag();
+  finishConfigDrag();
   $("config-nodes").replaceChildren();
   configGroups.clear();
 });
-window.addEventListener("blur", () => finishConfigNodeDrag());
+window.addEventListener("blur", () => finishConfigDrag());
 
 $("config-form").addEventListener("submit", async event => {
   event.preventDefault();
   if ($("save-config").disabled) return;
+  finishConfigDrag();
   const inputs = [...$("config-nodes").querySelectorAll("[data-field]:not(:disabled)")];
   if (settingsMode === "manage") inputs.push($("timeout"));
   const invalid = inputs.find(input => !input.checkValidity());
@@ -841,7 +903,8 @@ $("config-form").addEventListener("submit", async event => {
     if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
     const defaults = settingsMode === "add" ? {} : {timeout: Number($("timeout").value), identity_file: $("default-key").value.trim()};
     const saved = await api("/api/config", {...state.config, ...defaults, nodes,
-      node_order: settingsMode === "add" ? (state.config.node_order || {}) : Object.fromEntries(settingsNodeOrder)});
+      node_order: settingsMode === "add" ? (state.config.node_order || {}) : Object.fromEntries(settingsNodeOrder),
+      model_order: settingsMode === "add" ? (state.config.model_order || []) : settingsModelOrder});
     $("settings-dialog").close();
     const merged = saved.duplicates_removed ? ` 已合并 ${saved.duplicates_removed} 个重复节点，保留首次配置。` : "";
     notify((state.demo ? "演示配置已应用。" : "节点配置已保存。") + merged);
