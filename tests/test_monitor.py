@@ -140,11 +140,11 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("name", result["nodes"][0])
 
     def test_ssh_aliases_are_merged_and_ports_remain_distinct(self):
-        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: ("127.0.0.1", port or 2222)):
-            result = validate_config({"nodes": [{"host": "alias"}, {"host": "127.0.0.1", "port": 2222},
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: ("127.0.0.1", port)):
+            result = validate_config({"nodes": [{"host": "alias"}, {"host": "127.0.0.1", "port": 22},
                                                  {"host": "another-alias", "port": 2200}]}, TESTS)
         self.assertEqual(len(result["nodes"]), 2)
-        self.assertEqual([node["ssh_port"] for node in result["nodes"]], [2222, 2200])
+        self.assertEqual([node["ssh_port"] for node in result["nodes"]], [22, 2200])
 
     def test_limit_applies_after_deduplication(self):
         data = {"nodes": [{"host": f"synthetic-node-{index}"} for index in range(64)]}
@@ -173,16 +173,40 @@ class ConfigTests(unittest.TestCase):
     def test_resolver_reads_effective_ssh_hostname_and_port(self):
         reply = subprocess.CompletedProcess([], 0, b"hostname 127.0.0.1\nport 2200\n", b"")
         with patch("monitor.subprocess.run", return_value=reply) as run:
-            self.assertEqual(resolve_endpoint("alias", "account"), ("127.0.0.1", 2200))
-        self.assertEqual(run.call_args.args[0], ["ssh", "-G", "-o", "CanonicalizeHostname=no", "-l", "account", "alias"])
+            self.assertEqual(resolve_endpoint("alias", "account", 2200), ("127.0.0.1", 2200))
+        self.assertEqual(run.call_args.args[0], ["ssh", "-G", "-o", "CanonicalizeHostname=no", "-l", "account", "-p", "2200", "alias"])
 
-    def test_defaults_preserve_ssh_configuration(self):
+    def test_defaults_use_root_and_22_with_ssh_key_inheritance(self):
         result = validate_config({"nodes": [{"host": "alias"}]}, TESTS)
         self.assertEqual(result["interval"], 5)
         self.assertNotIn("npu_smi_path", result)
         self.assertEqual(result["nodes"][0]["identity_file"], "")
-        self.assertEqual(result["nodes"][0]["user"], "")
-        self.assertIsNone(result["nodes"][0]["port"])
+        self.assertEqual(result["nodes"][0]["user"], "root")
+        self.assertEqual(result["nodes"][0]["port"], 22)
+
+    def test_blank_and_explicit_login_defaults_are_identical(self):
+        with patch("monitor.resolve_endpoint", return_value=("127.0.0.1", 22)) as resolve:
+            variants = [{}, {"user": "", "port": None}, {"user": "  ", "port": ""}, {"user": "root", "port": 22}]
+            configs = [validate_config({"nodes": [{"host": "alias", **values}]}, TESTS) for values in variants]
+            self.assertTrue(all(config == configs[0] for config in configs))
+            self.assertTrue(all(call.args == ("alias", "root", 22) for call in resolve.call_args_list))
+
+    def test_default_login_overrides_ssh_user_and_port_configuration(self):
+        reply = subprocess.CompletedProcess([], 0, b"hostname 127.0.0.1\nuser other-account\nport 2200\n", b"")
+        with patch("monitor.subprocess.run", return_value=reply) as run:
+            self.assertEqual(resolve_endpoint("alias", "", None), ("127.0.0.1", 22))
+        self.assertEqual(run.call_args.args[0], ["ssh", "-G", "-o", "CanonicalizeHostname=no", "-l", "root", "-p", "22", "alias"])
+
+    def test_default_login_password_is_preserved_with_blank_and_explicit_fields(self):
+        with patch("monitor.resolve_endpoint", return_value=("127.0.0.1", 22)):
+            current = validate_config({"nodes": [{"host": "alias", "user": "", "port": None,
+                "auth_type": "password", "password": "synthetic-default-password"}]}, TESTS)
+            legacy = copy.deepcopy(current)
+            legacy["nodes"][0].update(user="", port=None)
+            for previous in [current, legacy]:
+                result = validate_config({"nodes": [{"host": "alias", "user": "root", "port": 22,
+                    "auth_type": "password"}]}, TESTS, previous)
+                self.assertEqual(result["nodes"][0]["password"], "synthetic-default-password")
 
     def test_invalid_configuration_rejected(self):
         cases = [{"interval": 0}, {"interval": float("nan")}, {"timeout": True},

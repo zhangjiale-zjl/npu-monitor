@@ -90,6 +90,23 @@ class ConnectionTests(unittest.TestCase):
         self.assertFalse(worker.session.closed)
         self.assertEqual(self.monitor.snapshot()["nodes"], before)
 
+    def test_blank_and_explicit_defaults_keep_worker_and_reuse_one_connection(self):
+        config = validate_config({"nodes": [{"host": "test-node"}]}, self.base)
+        self.monitor.reconfigure(config, persist=False)
+        worker = next(iter(self.monitor.workers.values()))
+        worker.session.query()
+        process = worker.session.process
+        public = self.monitor.snapshot()["config"]
+        public["nodes"][0].update(user="", port=None)
+        self.monitor.reconfigure(validate_config(public, self.base, config), persist=False)
+        self.assertIs(next(iter(self.monitor.workers.values())), worker)
+        self.assertTrue(self.probe(user="root", port=22)["reused_connection"])
+        self.assertTrue(self.probe(user="", port=None)["reused_connection"])
+        self.assertIs(worker.session.process, process)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][self.calls[0].index("-l") + 1], "root")
+        self.assertEqual(self.calls[0][self.calls[0].index("-p") + 1], "22")
+
     def test_node_key_overrides_default_and_unused_default_is_ignored(self):
         key = self.base / "node-key"
         key.touch()

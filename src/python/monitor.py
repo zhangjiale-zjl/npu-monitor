@@ -67,8 +67,8 @@ def key_path(value, base):
 @dataclass(frozen=True)
 class Node:
     host: str
-    user: str = ""
-    port: int | None = None
+    user: str = "root"
+    port: int = 22
     identity_file: str = ""
     auth_type: str = "key"
     password: str = field(default="", repr=False)
@@ -88,25 +88,20 @@ def normalize_address(address):
         return address.lower().rstrip(".")
 
 
-def resolve_endpoint(host, user="", port=None):
+def resolve_endpoint(host, user="root", port=22):
     """Read local OpenSSH configuration without opening an SSH connection."""
-    args = ["ssh", "-G", "-o", "CanonicalizeHostname=no"]
-    if user:
-        args += ["-l", user]
-    if port:
-        args += ["-p", str(port)]
-    args.append(host)
+    user = user.strip() or "root"
+    port = 22 if port in (None, "") else port
+    args = ["ssh", "-G", "-o", "CanonicalizeHostname=no", "-l", user, "-p", str(port), host]
     kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
         result = subprocess.run(args, capture_output=True, timeout=3, **kwargs)
         if result.returncode == 0:
             fields = dict(line.split(None, 1) for line in result.stdout.decode("utf-8", "replace").splitlines() if " " in line)
-            resolved_port = int(fields.get("port", port or 22))
-            if 1 <= resolved_port <= 65535:
-                return normalize_address(fields.get("hostname", host)), resolved_port
+            return normalize_address(fields.get("hostname", host)), port
     except (OSError, ValueError, subprocess.TimeoutExpired):
         pass
-    return normalize_address(host), port or 22
+    return normalize_address(host), port
 
 
 def validate_config(data, base, current=None):
@@ -133,11 +128,14 @@ def validate_config(data, base, current=None):
         user = entry.get("user", "")
         if not isinstance(host, str) or not HOST.fullmatch(host):
             raise ValueError("节点地址须为 IP、主机名或 SSH 配置中的 Host 别名")
-        if not isinstance(user, str) or (user and not USER.fullmatch(user)):
+        if not isinstance(user, str):
+            raise ValueError(f"{host} 的 SSH 用户名无效")
+        user = user.strip() or "root"
+        if not USER.fullmatch(user):
             raise ValueError(f"{host} 的 SSH 用户名无效")
         port = entry.get("port")
         if port in (None, ""):
-            port = None
+            port = 22
         elif isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError(f"{host} 的端口须为 1–65535 的整数")
         address, ssh_port = endpoint(host, user, port)
@@ -149,8 +147,8 @@ def validate_config(data, base, current=None):
         auth_type = entry.get("auth_type", "key")
         if auth_type not in ("key", "password"):
             raise ValueError(f"{host} 的认证方式须为 key 或 password")
-        old = next((node for node in previous if node.get("user", "") == user and
-                    endpoint(node["host"], node.get("user", ""), node.get("port")) == (address, ssh_port)), {})
+        old = next((node for node in previous if (node.get("user", "").strip() or "root") == user and
+                    endpoint(node["host"], node.get("user", "").strip() or "root", node.get("port") or 22) == (address, ssh_port)), {})
         password = entry.get("password", old.get("password", ""))
         if not isinstance(password, str) or len(password.encode("utf-8")) > 4096 or any(c in password for c in "\r\n\x00"):
             raise ValueError(f"{host} 的密码须为不含换行或空字符的字符串，最多 4096 字节")

@@ -519,6 +519,8 @@ function configNodeValue(fieldset) {
     const field = input.dataset.field;
     if (field !== "password") node[field] = field === "port" ? (input.value ? Number(input.value) : null) : input.value.trim();
   });
+  node.user = node.user || "root";
+  node.port = node.port ?? 22;
   const password = fieldset.querySelector('[data-field="password"]').value;
   if (node.auth_type === "password" && password !== "") node.password = password;
   return node;

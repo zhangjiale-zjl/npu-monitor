@@ -12,8 +12,8 @@
     },
     {
       "host": "example-alias",
-      "user": "",
-      "port": null,
+      "user": "root",
+      "port": 22,
       "auth_type": "key",
       "identity_file": ""
     },
