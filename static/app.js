@@ -399,6 +399,53 @@ function nodeCard(node) {
   return card;
 }
 
+function ipv4Parts(address) {
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)) return null;
+  const parts = address.split(".").map(Number);
+  return parts.every(part => part <= 255) ? parts : null;
+}
+
+function ipAddressParts(value) {
+  let address = value.replace(/^\[|\]$/g, "").split("%")[0];
+  const ipv4 = ipv4Parts(address);
+  if (ipv4) return {family: 4, parts: ipv4};
+  if (!address.includes(":")) return null;
+  if (address.includes(".")) {
+    const tail = ipv4Parts(address.slice(address.lastIndexOf(":") + 1));
+    if (!tail) return null;
+    address = address.slice(0, address.lastIndexOf(":") + 1)
+      + ((tail[0] << 8) | tail[1]).toString(16) + ":" + ((tail[2] << 8) | tail[3]).toString(16);
+  }
+  const halves = address.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)
+      || [...left, ...right].some(part => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
+  return {family: 6, parts: [...left.map(part => parseInt(part, 16)),
+    ...Array(missing).fill(0), ...right.map(part => parseInt(part, 16))]};
+}
+
+function compareNodeAddresses(a, b) {
+  const left = String(a.address || a.host || "");
+  const right = String(b.address || b.host || "");
+  const leftIp = ipAddressParts(left), rightIp = ipAddressParts(right);
+  if (leftIp && rightIp) {
+    if (leftIp.family !== rightIp.family) return leftIp.family - rightIp.family;
+    for (let index = 0; index < leftIp.parts.length; index++) {
+      if (leftIp.parts[index] !== rightIp.parts[index]) return leftIp.parts[index] - rightIp.parts[index];
+    }
+  } else {
+    if (leftIp || rightIp) return leftIp ? -1 : 1;
+    const result = left.localeCompare(right, "en", {numeric: true, sensitivity: "base"});
+    if (result) return result;
+  }
+  const port = node => node.ssh_port || node.port || Number(String(node.id || "").match(/:(\d+)$/)?.[1]) || 22;
+  return port(a) - port(b)
+    || String(a.id || a.host || "").localeCompare(String(b.id || b.host || ""), "en", {numeric: true});
+}
+
 function modelGroups(nodes) {
   const groups = new Map();
   nodes.forEach(node => {
@@ -406,8 +453,13 @@ function modelGroups(nodes) {
     if (!groups.has(model)) groups.set(model, []);
     groups.get(model).push(node);
   });
-  return [...groups].sort(([a, left], [b, right]) => a === "型号未识别" ? 1 : b === "型号未识别" ? -1
-    : right.length - left.length || a.localeCompare(b, "zh-CN", {numeric: true}));
+  const orders = state?.config?.node_order || {};
+  for (const [model, members] of groups) {
+    const rank = new Map((Array.isArray(orders[model]) ? orders[model] : []).map((id, index) => [id, index]));
+    members.sort((a, b) => ((rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity)) || compareNodeAddresses(a, b));
+  }
+  return [...groups].sort(([a], [b]) => a === "型号未识别" ? 1 : b === "型号未识别" ? -1
+    : a.localeCompare(b, "en", {sensitivity: "base"}));
 }
 
 function markDirectorySelection() {
@@ -569,20 +621,24 @@ for (const id of ["default-key", "timeout"]) $(id).addEventListener("input", () 
 let settingsMode = "manage";
 let configGroups = new Map();
 let configNodeDrag = null;
+let settingsNodeOrder = new Map();
 
 function announceNodeOrder(row) {
+  const list = row.parentElement;
+  const ids = [...list.children].map(entry => entry.querySelector(".config-node").dataset.id).filter(Boolean);
+  if (ids.length) settingsNodeOrder.set(list.dataset.model, ids);
   const position = [...row.parentElement.children].indexOf(row) + 1;
   $("config-order-status").textContent = `${row.querySelector(".config-node-name").textContent} 已调整至当前机型第 ${position} 个节点，保存后生效。`;
 }
 
 function finishConfigNodeDrag(event) {
   if (!configNodeDrag || (event && event.pointerId !== configNodeDrag.pointerId)) return;
-  const {row, list, pointerId, moved} = configNodeDrag;
+  const {row, list, pointerId, moved, initialRows} = configNodeDrag;
   configNodeDrag = null;
   row.classList.remove("reordering");
   document.body.classList.remove("node-reordering");
   if (list.hasPointerCapture(pointerId)) list.releasePointerCapture(pointerId);
-  if (moved && row.isConnected) announceNodeOrder(row);
+  if (moved && row.isConnected && initialRows.some((entry, index) => list.children[index] !== entry)) announceNodeOrder(row);
 }
 
 function configGroup(model) {
@@ -592,6 +648,24 @@ function configGroup(model) {
   const heading = el("div", "config-group-heading");
   heading.append(el("h3", "", model));
   const list = el("div", "config-group-nodes");
+  list.dataset.model = model;
+  const sort = el("button", "subtle reset-node-order", "按 IP 排序");
+  sort.type = "button";
+  sort.title = "恢复该机型的默认 IP 升序，保存后生效";
+  sort.addEventListener("click", () => {
+    if ($("save-config").disabled) return;
+    finishConfigNodeDrag();
+    const value = row => {
+      const fieldset = row.querySelector(".config-node");
+      const host = fieldset.querySelector('[data-field="host"]').value.trim();
+      return {host, address: host === fieldset.dataset.originalHost ? fieldset.dataset.address : host,
+        id: fieldset.dataset.id, port: Number(fieldset.querySelector('[data-field="port"]').value || 22)};
+    };
+    [...list.children].sort((a, b) => compareNodeAddresses(value(a), value(b))).forEach(row => list.append(row));
+    settingsNodeOrder.delete(model);
+    $("config-order-status").textContent = `${model} 已恢复 IP 升序，保存后生效。`;
+  });
+  heading.append(sort);
   section.append(heading, list);
   $("config-nodes").append(section);
   configGroups.set(model, list);
@@ -618,6 +692,8 @@ function addConfigNode(node = {}, {model = "待识别机型", open = true} = {})
   const fragment = $("config-node-template").content.cloneNode(true);
   const fieldset = fragment.querySelector("fieldset");
   fieldset.dataset.id = node.id || "";
+  fieldset.dataset.originalHost = node.host || "";
+  fieldset.dataset.address = state.nodes.find(live => live.id === node.id)?.address || node.address || node.host || "";
   fieldset.querySelector("legend").textContent = node.name || "新节点 · 自动识别环境型号";
   fieldset.querySelectorAll("[data-field]").forEach(input => {
     const field = input.dataset.field;
@@ -666,7 +742,7 @@ function addConfigNode(node = {}, {model = "待识别机型", open = true} = {})
   handle.addEventListener("pointerdown", event => {
     if (event.button !== 0 || configNodeDrag || $("save-config").disabled) return;
     event.preventDefault();
-    configNodeDrag = {row, list, pointerId: event.pointerId, startY: event.clientY, moved: false};
+    configNodeDrag = {row, list, pointerId: event.pointerId, startY: event.clientY, moved: false, initialRows: [...list.children]};
     list.setPointerCapture(event.pointerId);
   });
   handle.addEventListener("keydown", event => {
@@ -693,9 +769,10 @@ function openSettings({add = false, id = null} = {}) {
   finishConfigNodeDrag();
   settingsMode = add ? "add" : "manage";
   configGroups = new Map();
+  settingsNodeOrder = new Map(Object.entries(state.config.node_order || {}).map(([model, ids]) => [model, [...ids]]));
   $("settings-title").textContent = add ? "添加节点" : "管理节点";
   $("settings-description").textContent = add ? "填写连接信息，可先测试连接再添加。"
-    : "按机型管理，点击名称展开编辑；拖动左侧滑块排序后保存生效。";
+    : "默认按机型、IP 升序；点击名称编辑，拖动左侧滑块后保存生效。";
   $("config-nodes-title").textContent = add ? "节点信息" : "监控节点";
   $("add-node").hidden = add;
   $("connection-defaults").hidden = add;
@@ -718,6 +795,7 @@ function openSettings({add = false, id = null} = {}) {
   $("config-error").hidden = true;
   $("config-note").textContent = state.demo ? "演示模式：配置不写入文件" : "保存到启动时指定的配置文件";
   $("settings-dialog").showModal();
+  $("settings-dialog").querySelector(".dialog-body").scrollTop = 0;
   if (target) {
     target.scrollIntoView({block: "nearest"});
     target.querySelector('[data-field="host"]').focus();
@@ -762,7 +840,8 @@ $("config-form").addEventListener("submit", async event => {
     }
     if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
     const defaults = settingsMode === "add" ? {} : {timeout: Number($("timeout").value), identity_file: $("default-key").value.trim()};
-    const saved = await api("/api/config", {...state.config, ...defaults, nodes});
+    const saved = await api("/api/config", {...state.config, ...defaults, nodes,
+      node_order: settingsMode === "add" ? (state.config.node_order || {}) : Object.fromEntries(settingsNodeOrder)});
     $("settings-dialog").close();
     const merged = saved.duplicates_removed ? ` 已合并 ${saved.duplicates_removed} 个重复节点，保留首次配置。` : "";
     notify((state.demo ? "演示配置已应用。" : "节点配置已保存。") + merged);

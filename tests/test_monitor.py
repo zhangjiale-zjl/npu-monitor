@@ -191,6 +191,19 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(all(config == configs[0] for config in configs))
             self.assertTrue(all(call.args == ("alias", "root", 22) for call in resolve.call_args_list))
 
+    def test_manual_order_keeps_live_ids_and_removes_duplicates_and_deleted_nodes(self):
+        data = {"nodes": [{"host": "order-first"}, {"host": "order-second"}],
+            "node_order": {"Synthetic Model": ["order-second:22", "deleted-node:22", "order-second:22", "order-first:22"],
+                           "Removed Model": ["deleted-node:22"]}}
+        with patch("monitor.resolve_endpoint", side_effect=lambda host, user, port: (host, port)):
+            config = validate_config(data, TESTS)
+        self.assertEqual(config["node_order"], {"Synthetic Model": ["order-second:22", "order-first:22"]})
+
+    def test_invalid_manual_order_is_rejected(self):
+        for order in [[], {"": []}, {"Model": "node"}, {"Model": [1]}, {"Model": ["node"] * 65}]:
+            with self.subTest(order=order), self.assertRaises(ValueError):
+                validate_config({"node_order": order}, TESTS)
+
     def test_default_login_overrides_ssh_user_and_port_configuration(self):
         reply = subprocess.CompletedProcess([], 0, b"hostname 127.0.0.1\nuser other-account\nport 2200\n", b"")
         with patch("monitor.subprocess.run", return_value=reply) as run:
@@ -358,10 +371,14 @@ class WorkerTests(unittest.TestCase):
                 workers = dict(monitor.workers)
                 public = monitor.snapshot()["config"]
                 public["nodes"] = [public["nodes"][2], *public["nodes"][:2]]
+                public["node_order"] = {"Synthetic Server": [node["id"] for node in public["nodes"]]}
                 monitor.reconfigure(validate_config(public, base, config))
                 expected = ["order-third", "order-first", "order-second"]
                 self.assertEqual([node["host"] for node in monitor.snapshot()["nodes"]], expected)
                 self.assertEqual([node["host"] for node in json.loads(monitor.path.read_text())["nodes"]], expected)
+                self.assertEqual(json.loads(monitor.path.read_text())["node_order"], public["node_order"])
+                loaded = validate_config(json.loads(monitor.path.read_text()), base)
+                self.assertEqual(loaded["node_order"], public["node_order"])
                 self.assertTrue(all(monitor.workers[key] is worker for key, worker in workers.items()))
             finally:
                 monitor.close()

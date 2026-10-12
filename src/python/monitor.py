@@ -159,8 +159,21 @@ def validate_config(data, base, current=None):
         identity_file = key_path(entry.get("identity_file", ""), base) if auth_type == "key" else ""
         nodes.append(Node(host=host, user=user, port=port, identity_file=identity_file,
                           auth_type=auth_type, password=password, address=address, ssh_port=ssh_port))
+    order = data.get("node_order", {})
+    if not isinstance(order, dict) or len(order) > MAX_NODES:
+        raise ValueError("节点排序须为按机型保存的对象，最多 64 个机型")
+    node_ids = {node.id for node in nodes}
+    node_order = {}
+    for model, ids in order.items():
+        if not isinstance(model, str) or not model.strip() or len(model) > 200:
+            raise ValueError("节点排序的机型名称无效")
+        if not isinstance(ids, list) or len(ids) > MAX_NODES or any(not isinstance(value, str) or len(value) > 512 for value in ids):
+            raise ValueError("机型内的节点排序须为最多 64 个节点编号组成的列表")
+        ids = list(dict.fromkeys(value for value in ids if value in node_ids))
+        if ids:
+            node_order[model] = ids
     return {"interval": interval, "timeout": timeout, "identity_file": identity,
-            "nodes": [asdict(node) for node in nodes]}
+            "nodes": [asdict(node) for node in nodes], "node_order": node_order}
 
 
 def public_config(config):
