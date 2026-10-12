@@ -111,6 +111,32 @@ def validate_model_order(order):
     return list(dict.fromkeys(order))
 
 
+def validate_folders(folders, node_ids):
+    if not isinstance(folders, list) or len(folders) > MAX_NODES:
+        raise ValueError("自定义目录须为列表，最多 64 个目录")
+    result, ids, names = [], set(), set()
+    for folder in folders:
+        if not isinstance(folder, dict):
+            raise ValueError("目录信息必须是 JSON 对象")
+        folder_id, name = folder.get("id"), folder.get("name")
+        if not isinstance(folder_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", folder_id) or folder_id in ids:
+            raise ValueError("目录编号无效或重复")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or any(c in name for c in "\r\n\x00"):
+            raise ValueError("目录名称须为 1–80 个字符，不能包含换行")
+        name = name.strip()
+        if name.casefold() in names:
+            raise ValueError("目录名称已存在，请使用其他名称")
+        members = folder.get("node_ids", [])
+        if not isinstance(members, list) or len(members) > MAX_NODES or any(
+                not isinstance(member, str) or len(member) > 512 for member in members):
+            raise ValueError("目录成员须为节点编号列表，最多 64 个节点")
+        ids.add(folder_id)
+        names.add(name.casefold())
+        result.append({"id": folder_id, "name": name,
+                       "node_ids": list(dict.fromkeys(member for member in members if member in node_ids))})
+    return result
+
+
 def validate_config(data, base, current=None):
     if not isinstance(data, dict):
         raise ValueError("配置必须是 JSON 对象")
@@ -180,9 +206,10 @@ def validate_config(data, base, current=None):
         if ids:
             node_order[model] = ids
     model_order = validate_model_order(data.get("model_order", []))
+    folders = validate_folders(data.get("folders", (current or {}).get("folders", [])), node_ids)
     return {"interval": interval, "timeout": timeout, "identity_file": identity,
             "nodes": [asdict(node) for node in nodes], "node_order": node_order,
-            "model_order": model_order}
+            "model_order": model_order, "folders": folders}
 
 
 def public_config(config):
@@ -657,6 +684,63 @@ class Monitor:
                 self.config = config
         return order
 
+    def update_folders(self, data):
+        if not isinstance(data, dict):
+            raise ValueError("请求必须是 JSON 对象")
+        with self.change_lock:
+            config = copy.deepcopy(self.config)
+            folders = config["folders"]
+            action = data.get("action")
+            if not isinstance(action, str):
+                raise ValueError("请提供目录操作")
+            node_ids = set(self.workers)
+            folder = next((item for item in folders if item["id"] == data.get("folder_id")), None)
+            if action == "create":
+                folder = {"id": secrets.token_hex(16), "name": data.get("name"), "node_ids": []}
+                folders.append(folder)
+            elif action == "reorder":
+                order = data.get("folder_ids")
+                if not isinstance(order, list) or any(not isinstance(value, str) for value in order) or \
+                        len(order) != len(folders) or set(order) != {item["id"] for item in folders}:
+                    raise ValueError("目录顺序须包含全部目录且不能重复")
+                by_id = {item["id"]: item for item in folders}
+                config["folders"] = [by_id[folder_id] for folder_id in order]
+            elif action == "set_membership":
+                node_id, selected = data.get("node_id"), data.get("folder_ids")
+                if not isinstance(node_id, str) or node_id not in node_ids:
+                    raise ValueError("节点已移除，请刷新后重试")
+                if not isinstance(selected, list) or len(selected) > MAX_NODES or any(not isinstance(value, str) for value in selected) or \
+                        not set(selected) <= {item["id"] for item in folders}:
+                    raise ValueError("选定目录已移除，请刷新后重试")
+                for item in folders:
+                    members = item["node_ids"]
+                    if item["id"] in selected and node_id not in members:
+                        members.append(node_id)
+                    elif item["id"] not in selected and node_id in members:
+                        members.remove(node_id)
+            elif action in {"rename", "delete", "assign", "remove"}:
+                if not folder:
+                    raise ValueError("目录已移除，请刷新后重试")
+                if action == "rename":
+                    folder["name"] = data.get("name")
+                elif action == "delete":
+                    folders.remove(folder)
+                else:
+                    node_id = data.get("node_id")
+                    if not isinstance(node_id, str) or node_id not in node_ids:
+                        raise ValueError("节点已移除，请刷新后重试")
+                    if action == "assign" and node_id not in folder["node_ids"]:
+                        folder["node_ids"].append(node_id)
+                    elif action == "remove" and node_id in folder["node_ids"]:
+                        folder["node_ids"].remove(node_id)
+            else:
+                raise ValueError("不支持的目录操作")
+            config["folders"] = validate_folders(config["folders"], node_ids)
+            self.save_config(config)
+            with self.lock:
+                self.config = config
+            return {"ok": True, "folders": config["folders"], "folder_id": folder["id"] if folder else None}
+
     def snapshot(self):
         with self.lock:
             config = public_config(self.config)
@@ -823,6 +907,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, self.server.monitor.snapshot())
             return
         files = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+                 "/folders.js": ("folders.js", "text/javascript"),
                  "/style.css": ("style.css", "text/css")}
         if path not in files:
             self.reply(404, {"error": "页面不存在"})
@@ -845,7 +930,10 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == "/api/config":
                 with self.server.monitor.change_lock:
-                    config = validate_config(data, self.server.monitor.path.parent, self.server.monitor.config)
+                    if not isinstance(data, dict):
+                        raise ValueError("配置必须是 JSON 对象")
+                    pending = {**data, "folders": self.server.monitor.config["folders"]}
+                    config = validate_config(pending, self.server.monitor.path.parent, self.server.monitor.config)
                     self.server.monitor.reconfigure(config)
                     self.reply(200, {"ok": True, "duplicates_removed": len(data.get("nodes", [])) - len(config["nodes"])})
                     return
@@ -855,6 +943,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             elif path == "/api/nodes":
                 self.reply(200, self.server.monitor.add_nodes(data))
+                return
+            elif path == "/api/folders":
+                self.reply(200, self.server.monitor.update_folders(data))
                 return
             elif path == "/api/control":
                 if not isinstance(data, dict):

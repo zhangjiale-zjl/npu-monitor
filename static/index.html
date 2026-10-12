@@ -7,6 +7,7 @@
   <title>NPU 节点监控</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
+  <script src="/folders.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -21,17 +22,18 @@
   </div>
   <div class="notice" id="notice" role="status" hidden></div>
   <main class="workspace">
-    <aside id="model-sidebar" class="model-sidebar" aria-label="机器型号目录">
+    <aside id="model-sidebar" class="model-sidebar" aria-label="节点目录">
       <div class="sidebar-panel">
         <div id="directory-resize" class="directory-resize" role="separator" tabindex="0" aria-label="调整机型目录宽度" aria-orientation="vertical" aria-controls="model-sidebar" aria-valuemin="144" aria-valuemax="420" aria-valuenow="168" title="左右拖动调整宽度；双击恢复默认"></div>
-        <div class="sidebar-head"><h2 class="sidebar-title">机器型号</h2><button id="sidebar-toggle" class="subtle" aria-label="收起机型目录" aria-expanded="true" aria-controls="model-directory-content" title="收起机型目录"><span aria-hidden="true">‹</span></button></div>
-        <div id="model-directory-content"><div id="model-directory" role="group" aria-label="按机器型号筛选"></div><p id="directory-empty" class="directory-hint">添加节点后显示机器型号</p><p class="directory-hint">点击型号筛选 · 拖动排序自动保存</p><p id="directory-order-status" class="visually-hidden" role="status" aria-live="polite"></p><p id="directory-hover-hint" class="directory-hint" hidden>移出目录收起 · 点击“固定”常驻</p></div>
+        <div class="sidebar-head"><h2 class="sidebar-title">节点目录</h2><button id="sidebar-toggle" class="subtle" aria-label="收起目录" aria-expanded="true" aria-controls="model-directory-content" title="收起目录"><span aria-hidden="true">‹</span></button></div>
+        <div id="model-directory-content"><div id="model-directory" role="group" aria-label="按目录或机器型号筛选"></div><p id="directory-empty" class="directory-hint">添加节点后显示机器型号</p><p class="directory-hint">拖动节点滑块加入目录 · 顺序自动保存</p><p id="directory-order-status" class="visually-hidden" role="status" aria-live="polite"></p><p id="directory-hover-hint" class="directory-hint" hidden>移出目录收起 · 点击“固定”常驻</p></div>
       </div>
     </aside>
     <section class="content" aria-label="NPU 监控数据">
       <div class="overview"><div><h2 id="view-title" aria-live="polite">全部节点 · NPU 总览</h2><p id="view-description">等待节点数据</p></div><div class="summary" id="summary"></div></div>
       <div id="nodes" class="model-groups"></div>
       <div id="empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▦</div><h3>添加需要监控的节点</h3><p>填写节点地址，沿用本机 SSH 配置或指定私钥文件。</p><button id="empty-settings" class="primary">＋ 添加节点</button></div>
+      <div id="folder-empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▤</div><h3>目录中暂无节点</h3><p>从全部节点拖入此目录，或点击节点的目录滑块选择归属。</p><button id="folder-show-all" class="primary">查看全部节点</button></div>
     </section>
   </main>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
@@ -51,5 +53,15 @@
     </form>
   </dialog>
   <template id="config-node-template"><fieldset class="config-node"><legend>节点</legend><div class="node-fields"><label>地址 / SSH 别名<input data-field="host" placeholder="节点地址或 SSH 别名" required></label><label>用户名<input data-field="user" placeholder="root" title="留空默认 root" autocomplete="off"></label><label>端口<input data-field="port" type="number" min="1" max="65535" placeholder="22" title="留空默认 22"></label></div><div class="node-auth"><label>认证方式<select data-field="auth_type" aria-label="认证方式"><option value="key">密钥登录</option><option value="password">密码登录</option></select></label><label class="password-field" hidden>节点密码<input data-field="password" type="password" placeholder="输入 SSH 登录密码" autocomplete="off"></label></div><div class="node-key"><label>节点私钥文件<input data-field="identity_file" placeholder="默认私钥 / 本机 SSH 配置" autocomplete="off"></label><button type="button" class="test-node subtle">测试连接</button><button type="button" class="remove-node subtle">移除</button></div><p class="auth-note help" hidden></p><div class="node-test-result" role="status" aria-live="polite" hidden></div></fieldset></template>
+  <dialog id="folder-dialog" class="folder-dialog" aria-labelledby="folder-dialog-title"><form id="folder-form">
+    <div class="dialog-head"><div><h2 id="folder-dialog-title">新建目录</h2><p>按用途组织节点，一个节点可加入多个目录。</p></div><button id="folder-close" type="button" class="icon-button" aria-label="关闭目录设置">×</button></div>
+    <div class="dialog-body"><label>目录名称<input id="folder-name" maxlength="80" required autocomplete="off" placeholder="输入目录名称"></label><p id="folder-delete-help" class="help" hidden>删除目录会保留全部节点及其他目录中的归属。</p><p id="folder-error" class="folder-error" role="alert" hidden></p></div>
+    <div class="dialog-footer"><button id="folder-delete" type="button" class="subtle folder-delete" hidden>删除目录</button><span>保存到本机配置</span><button id="folder-cancel" type="button" class="subtle">取消</button><button id="folder-save" type="submit" class="primary">创建目录</button></div>
+  </form></dialog>
+  <dialog id="node-folders-dialog" class="folder-dialog" aria-labelledby="node-folders-title"><form id="node-folders-form">
+    <div class="dialog-head"><div><h2 id="node-folders-title">节点目录</h2><p id="node-folders-description"></p></div><button id="node-folders-close" type="button" class="icon-button" aria-label="关闭节点目录">×</button></div>
+    <div class="dialog-body"><div id="node-folder-options" class="node-folder-options"></div><p id="node-folders-empty" class="help" hidden>先在左侧“自定义目录”点击 ＋ 创建目录。</p><p id="node-folders-error" class="folder-error" role="alert" hidden></p></div>
+    <div class="dialog-footer"><span>勾选多个目录，取消勾选可移出</span><button id="node-folders-cancel" type="button" class="subtle">取消</button><button id="node-folders-save" type="submit" class="primary">保存归属</button></div>
+  </form></dialog>
 </body>
 </html>

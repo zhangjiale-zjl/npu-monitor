@@ -55,7 +55,7 @@ function applyDirectoryState() {
   $("directory-hover-hint").hidden = !floating;
   $("directory-resize").hidden = !directoryDesktopMedia.matches || (directoryCollapsed && !floating);
   const toggle = $("sidebar-toggle");
-  const label = floating ? "固定展开机型目录" : directoryCollapsed ? "展开机型目录" : "收起机型目录";
+  const label = floating ? "固定展开目录" : directoryCollapsed ? "展开目录" : "收起目录";
   toggle.setAttribute("aria-expanded", String(!directoryCollapsed || floating));
   toggle.setAttribute("aria-label", label);
   toggle.title = label;
@@ -69,7 +69,7 @@ function cancelDirectoryHover() {
 }
 
 $("sidebar-toggle").addEventListener("click", () => {
-  if (directoryDrag || directorySaving) return;
+  if (directoryDrag || directorySaving || FolderUI.drag) return;
   finishDirectoryResize();
   directoryCollapsed = !directoryCollapsed;
   cancelDirectoryHover();
@@ -88,7 +88,7 @@ $("model-sidebar").addEventListener("pointerenter", event => {
   }, 500);
 });
 $("model-sidebar").addEventListener("pointerleave", () => {
-  if (directoryResize || directoryDrag) return;
+  if (directoryResize || directoryDrag || FolderUI.drag) return;
   cancelDirectoryHover();
   applyDirectoryState();
 });
@@ -109,7 +109,7 @@ directoryHoverMedia.addEventListener("change", () => {
 });
 const directoryResizeHandle = $("directory-resize");
 directoryResizeHandle.addEventListener("pointerdown", event => {
-  if (event.button !== 0 || !directoryDesktopMedia.matches || directoryResize || directoryDrag || directorySaving) return;
+  if (event.button !== 0 || !directoryDesktopMedia.matches || directoryResize || directoryDrag || directorySaving || FolderUI.drag) return;
   event.preventDefault();
   clearTimeout(directoryHoverTimer);
   directoryHoverTimer = null;
@@ -340,6 +340,7 @@ function sshHostKeyHelp(message, node = {}) {
 
 function nodeCard(node) {
   const card = el("article", "node-card");
+  card.dataset.nodeId = node.id;
   const head = el("div", "node-head");
   const identity = el("div", "node-identity");
   const title = el("h4", "", node.name);
@@ -356,7 +357,7 @@ function nodeCard(node) {
   edit.setAttribute("aria-label", `编辑节点 ${node.name}`);
   edit.addEventListener("click", () => openSettings({id: node.id}));
   right.append(update, edit);
-  head.append(identity, right);
+  head.append(FolderUI.nodeHandle(node), identity, right);
   const body = el("div", "node-body");
   if (node.error || node.warning) {
     const message = node.error || node.warning;
@@ -520,16 +521,18 @@ function modelGroups(nodes) {
 
 function markDirectorySelection() {
   $("model-directory").querySelectorAll(".model-filter").forEach(button => {
-    const selected = button.dataset.model === (selectedModel ?? "");
+    const selected = FolderUI.selected !== null ? button.dataset.folder === FolderUI.selected
+      : !button.dataset.folder && button.dataset.model === (selectedModel ?? "");
     button.classList.toggle("selected", selected);
     button.setAttribute("aria-pressed", String(selected));
   });
 }
 
-function directoryButton(label, count, model) {
+function directoryButton(label, count, model, folderId = null) {
   const button = el("button", "model-filter");
   button.type = "button";
   button.dataset.model = model ?? "";
+  button.dataset.folder = folderId ?? "";
   button.setAttribute("aria-label", `${label}，${count} 个节点`);
   button.setAttribute("aria-controls", "nodes");
   button.append(el("span", "model-label", label), el("span", "model-count", count));
@@ -537,12 +540,20 @@ function directoryButton(label, count, model) {
   button.addEventListener("click", () => {
     if (performance.now() < directoryClickSuppressedUntil) return;
     selectedModel = model;
+    FolderUI.selected = folderId;
     render();
   });
   return button;
 }
 
-async function saveDirectoryOrder(model, focus = false) {
+async function saveDirectoryOrder(model, focus = false, folderId = null) {
+  if (folderId) {
+    const order = [...$("model-directory").querySelectorAll(".directory-folder")].map(row => row.dataset.folder);
+    try { await FolderUI.save({action: "reorder", folder_ids: order}, "目录顺序已自动保存。"); }
+    catch (error) { notify(error.message, true); }
+    if (focus) FolderUI.focusRow(folderId);
+    return;
+  }
   const previous = [...(state.config.model_order || [])];
   const order = [...$("model-directory").querySelectorAll(".directory-model")].map(row => row.dataset.model);
   directorySaving = true;
@@ -608,7 +619,7 @@ function finishDirectoryDrag(event) {
   if (event) directoryHovered = $("model-sidebar").contains(document.elementFromPoint(event.clientX, event.clientY));
   if (!moved) { lastRender = ""; applyDirectoryState(); return; }
   const changed = moved && initialRows.some((entry, index) => list.children[index] !== entry);
-  if (changed && event?.type === "pointerup") void saveDirectoryOrder(row.dataset.model);
+  if (changed && event?.type === "pointerup") void saveDirectoryOrder(row.dataset.model, false, row.dataset.folder);
   else {
     initialRows.forEach(entry => list.append(entry));
     directorySignature = "";
@@ -618,16 +629,17 @@ function finishDirectoryDrag(event) {
   }
 }
 
-function directoryModel(model, count, list) {
-  const row = el("div", "directory-model");
+function directoryModel(model, count, list, folderId = null) {
+  const row = el("div", folderId ? "directory-folder" : "directory-model");
   row.dataset.model = model;
+  row.dataset.folder = folderId ?? "";
   const handle = el("button", "directory-order-handle", "⋮⋮");
   handle.type = "button";
-  handle.title = "拖动调整机型顺序，松开自动保存；↑↓调整顺序";
-  handle.setAttribute("aria-label", `调整目录机型 ${model} 的顺序`);
-  row.append(handle, directoryButton(model, count, model));
+  handle.title = folderId ? "拖动调整目录顺序，松开自动保存；↑↓调整顺序" : "拖动调整机型顺序，松开自动保存；↑↓调整顺序";
+  handle.setAttribute("aria-label", folderId ? `调整自定义目录 ${model} 的顺序` : `调整目录机型 ${model} 的顺序`);
+  row.append(handle, directoryButton(model, count, folderId ? null : model, folderId));
   row.addEventListener("pointerdown", event => {
-    if (event.button !== 0 || directoryDrag || directorySaving || directoryResize
+    if (event.button !== 0 || directoryDrag || directorySaving || directoryResize || FolderUI.drag
         || (event.pointerType === "touch" && !handle.contains(event.target))) return;
     event.preventDefault();
     directoryDrag = {row, list, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
@@ -641,7 +653,7 @@ function directoryModel(model, count, list) {
     } else if (event.key === "ArrowDown" && row.nextElementSibling) {
       event.preventDefault(); list.insertBefore(row.nextElementSibling, row);
     } else return;
-    void saveDirectoryOrder(model, true);
+    void saveDirectoryOrder(model, true, folderId);
   });
   return row;
 }
@@ -666,13 +678,15 @@ for (const type of ["pointerup", "pointercancel"]) document.addEventListener(typ
 window.addEventListener("blur", () => finishDirectoryDrag());
 
 function renderDirectory(groups) {
-  if (directoryDrag || directorySaving) return;
-  const signature = JSON.stringify(groups.map(([model, nodes]) => [model, nodes.length]));
+  if (directoryDrag || directorySaving || FolderUI.drag) return;
+  const signature = JSON.stringify([groups.map(([model, nodes]) => [model, nodes.length]), state.config.folders,
+    state.nodes.map(node => [node.id, node.name, node.status])]);
   if (signature !== directorySignature) {
     directorySignature = signature;
     const list = el("div", "model-filters");
     groups.forEach(([model, nodes]) => list.append(directoryModel(model, nodes.length, list)));
-    $("model-directory").replaceChildren(directoryButton("全部节点", state.nodes.length, null), list);
+    $("model-directory").replaceChildren(directoryButton("全部节点", state.nodes.length, null),
+      FolderUI.sidebar(), el("div", "directory-section-title", "机器型号"), list);
     $("directory-empty").hidden = groups.length > 0;
   }
   markDirectorySelection();
@@ -696,10 +710,11 @@ function modelSection(model, nodes) {
 }
 
 function render() {
-  if (!state) return;
+  if (!state || FolderUI.drag) return;
   const allGroups = modelGroups(state.nodes);
+  const folder = FolderUI.current();
   if (selectedModel !== null && !allGroups.some(([model]) => model === selectedModel)) selectedModel = null;
-  const signature = JSON.stringify([state.nodes, state.paused, state.config, selectedModel]);
+  const signature = JSON.stringify([state.nodes, state.paused, state.config, selectedModel, FolderUI.selected]);
   if (signature === lastRender) return;
   lastRender = signature;
   $("demo-label").hidden = !state.demo;
@@ -707,30 +722,32 @@ function render() {
   $("refresh").disabled = state.paused;
   $("poll-state").textContent = state.paused ? "采集已暂停" : `每 ${state.config.interval} 秒采集`;
   if (document.activeElement !== $("interval")) $("interval").value = state.config.interval;
-  const groups = selectedModel === null ? allGroups : allGroups.filter(([model]) => model === selectedModel);
+  const groups = folder ? [[folder.name, FolderUI.members(folder)]]
+    : selectedModel === null ? allGroups : allGroups.filter(([model]) => model === selectedModel);
   const nodes = groups.flatMap(([, members]) => members);
   const devices = nodes.flatMap(n => n.devices);
   const online = nodes.filter(n => n.status === "ok").length;
   renderDirectory(allGroups);
-  $("view-title").textContent = `${selectedModel ?? "全部节点"} · NPU 总览`;
-  $("view-description").textContent = state.paused ? "采集已暂停，展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · ${selectedModel === null ? "按服务器型号分区" : "当前机型"}`;
+  $("view-title").textContent = `${folder?.name ?? selectedModel ?? "全部节点"} · NPU 总览`;
+  $("view-description").textContent = state.paused ? "采集已暂停，展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · ${folder ? "自定义目录" : selectedModel === null ? "按服务器型号分区" : "当前机型"}`;
   $("summary").replaceChildren();
   const cards = nodes.reduce((sum, node) => sum + cardCount(node.devices), 0);
   for (const [label,value] of [["节点", nodes.length], ["卡 / die", `${cards} / ${dieCountText(devices)}`], ["Health 非 OK", devices.filter(d => d.health !== "OK").length], ["采集异常", nodes.filter(n => n.status === "error" || n.status === "warning").length]]) {
     const item = el("div", "summary-item", label); item.prepend(el("strong", "", value)); $("summary").append(item);
   }
   $("nodes").replaceChildren(...groups.map(([model, members]) => modelSection(model, members)));
-  $("empty").hidden = state.nodes.length > 0;
+  $("empty").hidden = state.nodes.length > 0 || !!folder;
+  $("folder-empty").hidden = !folder || nodes.length > 0;
   applyDirectoryWidth();
 }
 
 async function poll() {
-  if (polling || directorySaving) return;
+  if (polling || directorySaving || FolderUI.drag) return;
   polling = true;
   const revision = directoryOrderRevision;
   try {
     const next = await api("/api/state");
-    if (revision !== directoryOrderRevision) return;
+    if (revision !== directoryOrderRevision || FolderUI.drag) return;
     state = next;
     if (serviceDisconnected) notify("本地服务已连接。");
     serviceDisconnected = false;
@@ -1082,8 +1099,10 @@ $("config-form").addEventListener("submit", async event => {
       throw new Error("请重新启动更新后的监控工具，再使用密码登录。");
     }
     if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
+    const config = {...state.config};
+    delete config.folders;
     const saved = settingsMode === "add" ? await api("/api/nodes", {nodes})
-      : await api("/api/config", {...state.config, nodes, timeout: Number($("timeout").value),
+      : await api("/api/config", {...config, nodes, timeout: Number($("timeout").value),
         identity_file: $("default-key").value.trim(), node_order: Object.fromEntries(settingsNodeOrder),
         model_order: settingsModelOrder});
     $("settings-dialog").close();
@@ -1100,7 +1119,9 @@ $("interval-form").addEventListener("submit", async event => {
   event.preventDefault();
   if (!state) return;
   try {
-    await api("/api/config", {...state.config, interval: Number($("interval").value)});
+    const config = {...state.config};
+    delete config.folders;
+    await api("/api/config", {...config, interval: Number($("interval").value)});
     notify("监控周期已应用。");
     await poll();
   } catch (error) { notify(error.message, true); }
@@ -1112,5 +1133,6 @@ async function control(action) {
 }
 $("refresh").addEventListener("click", () => control("refresh"));
 $("pause").addEventListener("click", () => control(state?.paused ? "resume" : "pause"));
+FolderUI.init();
 poll();
 setInterval(poll, 1000);

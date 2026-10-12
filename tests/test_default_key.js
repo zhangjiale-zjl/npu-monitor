@@ -51,6 +51,7 @@ async function main() {
   h = harness("manage");
   h.elements["default-key"].value = "draft-default-key";
   h.elements.timeout.value = "23";
+  h.context.state.config.folders = [{id: "synthetic-folder", name: "Synthetic folder", node_ids: []}];
   await h.context.testConfigNode(h.fieldset);
   assert.deepEqual(h.requests[0], {url: "/api/test-connection",
     body: {node: h.node, identity_file: "draft-default-key", timeout: 23}});
@@ -58,6 +59,7 @@ async function main() {
   assert.equal(h.requests.at(-1).url, "/api/config");
   assert.equal(h.requests.at(-1).body.identity_file, "draft-default-key");
   assert.equal(h.requests.at(-1).body.timeout, 23);
+  assert.equal(Object.hasOwn(h.requests.at(-1).body, "folders"), false);
   h.elements["default-key"].value = "";
   await h.context.testConfigNode(h.fieldset);
   assert.equal(h.requests.at(-1).body.identity_file, "");

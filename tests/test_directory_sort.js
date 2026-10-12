@@ -24,7 +24,7 @@ function harness() {
   const save = deferred(), get = deferred();
   const config = {model_order: ["Model A", "Model Z"], interval: 17, nodes: [{host: "synthetic-node"}],
     node_order: {"Model A": ["synthetic-node:22"]}};
-  const context = {state: {config, demo: false}, directorySaving: false, directoryOrderRevision: 0,
+  const context = {state: {config, demo: false}, FolderUI: {drag: null}, directorySaving: false, directoryOrderRevision: 0,
     directorySignature: "before", lastRender: "before", polling: false, serviceDisconnected: false,
     $: id => id === "model-directory" ? directory : status,
     applyDirectoryState: () => {}, render: () => renders.push(plain(context.state.config)),
