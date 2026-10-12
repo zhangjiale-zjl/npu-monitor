@@ -64,24 +64,12 @@ def key_path(value, base):
     return str(path)
 
 
-def command_path(value, optional=False):
-    if not isinstance(value, str) or any(ord(char) < 32 for char in value):
-        raise ValueError("npu-smi 路径必须是不含控制字符的字符串")
-    value = value.strip()
-    if optional and not value:
-        return ""
-    if value != "npu-smi" and not value.startswith("/"):
-        raise ValueError("npu-smi 路径须为 npu-smi 或远端的绝对路径")
-    return value
-
-
 @dataclass(frozen=True)
 class Node:
     host: str
     user: str = ""
     port: int | None = None
     identity_file: str = ""
-    npu_smi_path: str = ""
     auth_type: str = "key"
     password: str = field(default="", repr=False)
     address: str = ""
@@ -127,7 +115,6 @@ def validate_config(data, base, current=None):
     interval = bounded_number(data.get("interval", 5), "监控周期（秒）", 1, 3600)
     timeout = bounded_number(data.get("timeout", 15), "采集超时（秒）", 1, 300)
     identity = key_path(data.get("identity_file", ""), base)
-    executable = command_path(data.get("npu_smi_path", "npu-smi"))
     entries = data.get("nodes", [])
     if not isinstance(entries, list):
         raise ValueError("nodes 必须是数组")
@@ -172,11 +159,10 @@ def validate_config(data, base, current=None):
         if auth_type == "key":
             password = ""
         identity_file = key_path(entry.get("identity_file", ""), base) if auth_type == "key" else ""
-        nodes.append(Node(host, user, port, identity_file,
-                          command_path(entry.get("npu_smi_path", ""), optional=True), auth_type, password,
-                          address, ssh_port))
+        nodes.append(Node(host=host, user=user, port=port, identity_file=identity_file,
+                          auth_type=auth_type, password=password, address=address, ssh_port=ssh_port))
     return {"interval": interval, "timeout": timeout, "identity_file": identity,
-            "npu_smi_path": executable, "nodes": [asdict(node) for node in nodes]}
+            "nodes": [asdict(node) for node in nodes]}
 
 
 def public_config(config):
@@ -205,9 +191,8 @@ class CollectionError(Exception):
 class SSHSession:
     """A single SSH process carries successive framed npu-smi requests."""
 
-    def __init__(self, node, identity, timeout, ssh="ssh", executable="npu-smi"):
+    def __init__(self, node, identity, timeout, ssh="ssh"):
         self.node, self.identity, self.timeout, self.ssh = node, identity, timeout, ssh
-        self.executable = executable
         self.process = None
         self.lines = None
         self.lock = threading.Lock()
@@ -226,14 +211,14 @@ class SSHSession:
             "case \"$request\" in NPU_MONITOR_*) "
             "printf '\\n%s BEGIN\\n' \"$request\"; "
             "printf 'NPU_MONITOR_ADDRESS %s\\n' \"$SSH_CONNECTION\"; "
-            f"{shlex.quote(self.executable)} info </dev/null 2>&1; rc=$?; "
+            "npu-smi info </dev/null 2>&1; rc=$?; "
             "printf '\\n%s END %s\\n' \"$request\" \"$rc\";; "
             "NPU_BOARD_*) case \"$npu:$chip\" in *[!0-9:]*|:*|*:) exit 2;; esac; "
             "printf '\\n%s BEGIN\\n' \"$request\"; "
             "if [ \"$scope\" = device ]; then "
-            f"{shlex.quote(self.executable)} info -t board -i \"$npu\" </dev/null 2>&1; "
+            "npu-smi info -t board -i \"$npu\" </dev/null 2>&1; "
             "else "
-            f"{shlex.quote(self.executable)} info -t board -i \"$npu\" -c \"$chip\" </dev/null 2>&1; "
+            "npu-smi info -t board -i \"$npu\" -c \"$chip\" </dev/null 2>&1; "
             "fi; rc=$?; printf '\\n%s END %s\\n' \"$request\" \"$rc\";; "
             "NPU_SYSTEM_*) printf '\\n%s BEGIN\\n' \"$request\"; "
             "printf 'NPU_MONITOR_SYSTEM_SOURCE dmidecode\\n'; "
@@ -425,10 +410,10 @@ def demo_output(index, tick):
 
 
 class Worker:
-    def __init__(self, monitor, node, identity, timeout, ssh, executable):
+    def __init__(self, monitor, node, identity, timeout, ssh):
         self.monitor, self.node = monitor, node
-        self.signature = (node, identity, timeout, executable)
-        self.session = SSHSession(node, identity, timeout, ssh, executable)
+        self.signature = (node, identity, timeout)
+        self.session = SSHSession(node, identity, timeout, ssh)
         self.stop_event, self.wake = threading.Event(), threading.Event()
         self.thread = threading.Thread(target=self.run, name=f"npu-{node.id}", daemon=True)
         self.tick = 0
@@ -567,11 +552,10 @@ class Monitor:
                 for entry in config["nodes"]:
                     node = Node(**entry)
                     identity = node.identity_file or config["identity_file"]
-                    executable = node.npu_smi_path or config["npu_smi_path"]
-                    signature = (node, identity, config["timeout"], executable)
+                    signature = (node, identity, config["timeout"])
                     worker = old.get(node.id)
                     if not worker or worker.signature != signature:
-                        worker = Worker(self, node, identity, config["timeout"], self.ssh, executable)
+                        worker = Worker(self, node, identity, config["timeout"], self.ssh)
                         created.append(worker)
                     new[node.id] = worker
                 self.config, self.workers = config, new
@@ -721,7 +705,6 @@ def main():
     parser.add_argument("--identity", help="所有节点默认使用的 SSH 私钥文件")
     parser.add_argument("--interval", type=float, help="监控周期，1–3600 秒")
     parser.add_argument("--timeout", type=float, help="单次采集总超时，1–300 秒")
-    parser.add_argument("--npu-smi", help="远端 npu-smi 可执行文件路径")
     parser.add_argument("--port", type=int, default=8765, help="本地看板端口，默认 8765")
     parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
     parser.add_argument("--demo", action="store_true", help="演示模式，完全不连接 SSH")
@@ -736,7 +719,7 @@ def main():
         if not isinstance(data, dict):
             raise ValueError("配置必须是 JSON 对象")
         for field, value in [("identity_file", args.identity), ("interval", args.interval),
-                             ("timeout", args.timeout), ("npu_smi_path", args.npu_smi)]:
+                             ("timeout", args.timeout)]:
             if value is not None:
                 data[field] = value
         for target in args.node:

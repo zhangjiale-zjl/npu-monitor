@@ -7,6 +7,28 @@ let polling = false;
 let serviceDisconnected = false;
 let noticeTimer;
 const detailsOpen = new Set();
+const modelIds = new Map();
+let directorySignature = "";
+let activeModelId = "all-models";
+let directoryCollapsed = false;
+try { directoryCollapsed = localStorage.getItem("npu-monitor-directory-collapsed") === "true"; } catch (_) {}
+
+function applyDirectoryState() {
+  $("model-sidebar").classList.toggle("collapsed", directoryCollapsed);
+  $("model-directory-content").hidden = directoryCollapsed;
+  const toggle = $("sidebar-toggle");
+  toggle.setAttribute("aria-expanded", String(!directoryCollapsed));
+  toggle.setAttribute("aria-label", directoryCollapsed ? "展开机型目录" : "收起机型目录");
+  toggle.title = directoryCollapsed ? "展开机型目录" : "收起机型目录";
+  toggle.querySelector("span").textContent = directoryCollapsed ? "›" : "‹";
+}
+
+$("sidebar-toggle").addEventListener("click", () => {
+  directoryCollapsed = !directoryCollapsed;
+  try { localStorage.setItem("npu-monitor-directory-collapsed", String(directoryCollapsed)); } catch (_) {}
+  applyDirectoryState();
+});
+applyDirectoryState();
 
 function el(tag, className, text) {
   const element = document.createElement(tag);
@@ -262,8 +284,54 @@ function modelGroups(nodes) {
     : right.length - left.length || a.localeCompare(b, "zh-CN", {numeric: true}));
 }
 
+function modelId(model) {
+  if (!modelIds.has(model)) modelIds.set(model, `machine-model-${modelIds.size + 1}`);
+  return modelIds.get(model);
+}
+
+function markDirectoryLocation() {
+  $("model-directory").querySelectorAll("a").forEach(link => {
+    const selected = link.dataset.target === activeModelId;
+    link.classList.toggle("selected", selected);
+    if (selected) link.setAttribute("aria-current", "location"); else link.removeAttribute("aria-current");
+  });
+}
+
+function directoryLink(label, count, id) {
+  const link = el("a", "model-link");
+  link.href = `#${id}`;
+  link.dataset.target = id;
+  link.setAttribute("aria-label", `${label}，${count} 个节点`);
+  link.append(el("span", "model-label", label), el("span", "model-count", count));
+  link.title = `${label} · ${count} 个节点`;
+  link.addEventListener("click", event => {
+    event.preventDefault();
+    const target = $(id);
+    if (!target) return;
+    activeModelId = id;
+    markDirectoryLocation();
+    target.scrollIntoView({behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start"});
+    target.focus({preventScroll: true});
+  });
+  return link;
+}
+
+function renderDirectory(groups) {
+  const signature = JSON.stringify(groups.map(([model, nodes]) => [model, nodes.length]));
+  if (signature === directorySignature) return;
+  directorySignature = signature;
+  const list = el("div", "model-links");
+  groups.forEach(([model, nodes]) => list.append(directoryLink(model, nodes.length, modelId(model))));
+  if (!groups.some(([model]) => modelId(model) === activeModelId)) activeModelId = "all-models";
+  $("model-directory").replaceChildren(directoryLink("全部节点", state.nodes.length, "all-models"), list);
+  $("directory-empty").hidden = groups.length > 0;
+  markDirectoryLocation();
+}
+
 function modelSection(model, nodes) {
   const section = el("section", "model-group");
+  section.id = modelId(model);
+  section.tabIndex = -1;
   if (nodes.length > 2) section.classList.add("model-wide");
   else if (nodes.length === 2) section.classList.add("model-double");
   section.setAttribute("aria-label", `${model} 节点分区`);
@@ -292,6 +360,7 @@ function render() {
   const devices = nodes.flatMap(n => n.devices);
   const online = nodes.filter(n => n.status === "ok").length;
   const groups = modelGroups(nodes);
+  renderDirectory(groups);
   $("view-title").textContent = "全部节点 · NPU 总览";
   $("view-description").textContent = state.paused ? "采集已暂停，按机型展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · 按服务器型号分区`;
   $("summary").replaceChildren();
@@ -353,7 +422,6 @@ function addConfigNode(node = {}) {
 function openSettings({add = false, id = null} = {}) {
   if (!state) { notify("请先启动本地服务。", true); return; }
   $("default-key").value = state.config.identity_file;
-  $("npu-path").value = state.config.npu_smi_path || "npu-smi";
   $("timeout").value = state.config.timeout;
   $("config-nodes").replaceChildren();
   state.config.nodes.forEach(addConfigNode);
@@ -392,7 +460,7 @@ $("config-form").addEventListener("submit", async event => {
       throw new Error("请重新启动更新后的监控工具，再使用密码登录。");
     }
     if (!state.auto_node_names) throw new Error("请重启本地监控服务后使用自动命名与节点去重。");
-    const saved = await api("/api/config", {...state.config, timeout: Number($("timeout").value), identity_file: $("default-key").value.trim(), npu_smi_path: $("npu-path").value.trim(), nodes});
+    const saved = await api("/api/config", {...state.config, timeout: Number($("timeout").value), identity_file: $("default-key").value.trim(), nodes});
     $("settings-dialog").close();
     const merged = saved.duplicates_removed ? ` 已合并 ${saved.duplicates_removed} 个重复节点，保留首次配置。` : "";
     notify((state.demo ? "演示配置已应用。" : "节点配置已保存。") + merged);

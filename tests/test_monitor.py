@@ -133,7 +133,7 @@ class ConfigTests(unittest.TestCase):
     def test_defaults_preserve_ssh_configuration(self):
         result = validate_config({"nodes": [{"host": "alias"}]}, TESTS)
         self.assertEqual(result["interval"], 5)
-        self.assertEqual(result["npu_smi_path"], "npu-smi")
+        self.assertNotIn("npu_smi_path", result)
         self.assertEqual(result["nodes"][0]["identity_file"], "")
         self.assertEqual(result["nodes"][0]["user"], "")
         self.assertIsNone(result["nodes"][0]["port"])
@@ -145,7 +145,7 @@ class ConfigTests(unittest.TestCase):
                  {"nodes": [{"host": "host", "port": True}]},
                  {"nodes": [{"host": "host", "port": 70000}]},
                  {"nodes": [{"host": "host", "user": "a b"}]},
-                 {"identity_file": "id.pub"}, {"npu_smi_path": "npu-smi;bad"}]
+                 {"identity_file": "id.pub"}]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValueError):
                 validate_config(case, TESTS)
@@ -156,9 +156,15 @@ class ConfigTests(unittest.TestCase):
             (base / "default-key").write_text("test placeholder")
             (base / "node-key").write_text("test placeholder")
             result = validate_config({"identity_file": "default-key", "nodes": [
-                {"host": "host", "identity_file": "node-key", "npu_smi_path": "/opt/npu/bin/npu-smi"}]}, base)
+                {"host": "host", "identity_file": "node-key"}]}, base)
             self.assertEqual(result["identity_file"], str((base / "default-key").resolve()))
             self.assertEqual(result["nodes"][0]["identity_file"], str((base / "node-key").resolve()))
+
+    def test_command_path_fields_are_not_part_of_connection_config(self):
+        result = validate_config({"npu_smi_path": "/unused/old-command", "nodes": [
+            {"host": "host", "npu_smi_path": "/unused/node-command"}]}, TESTS)
+        self.assertNotIn("npu_smi_path", result)
+        self.assertNotIn("npu_smi_path", result["nodes"][0])
 
 
 class TransportTests(unittest.TestCase):
@@ -190,6 +196,7 @@ class TransportTests(unittest.TestCase):
         self.assertIn("IdentitiesOnly=yes", calls[0])
         self.assertIn("chosen-key", calls[0])
         self.assertIn("ClearAllForwardings=yes", calls[0])
+        self.assertIn("npu-smi info </dev/null", calls[0][-1])
         session.close()
         self.assertIsNotNone(process.poll())
 

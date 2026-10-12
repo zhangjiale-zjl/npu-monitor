@@ -55,6 +55,7 @@ python3 src/python/monitor.py --config nodes.json
 - **监控周期**：输入 1–3600 秒并点击“应用”。周期按每个节点的采集开始时间计算，单节点采集互不重叠；采集耗时超过周期时，完成后尽快开始下一次。
 - **立即采集 / 暂停采集 / 继续采集**：控制全部节点。暂停时正在进行的采集可以完成，页面显示最近一次结果。
 - **全部节点总览**：页面默认按服务器型号分区，每个分区直接展示所有节点，每个节点使用紧凑表格，无需选择节点。分区标题显示节点数、芯片数和采集异常数；型号未识别的节点集中显示在页面末尾。布局根据窗口宽度自动调整列数，1280 像素宽的窗口可并排显示 3 个节点；节点较多时在同一页面滚动查看。
+- **机型目录**：左侧列出机器型号和各型号的节点数量，点击型号滚动到对应分区，全部节点保持同页展示。目录可收起或展开，浏览器记住折叠状态；收起后释放左侧空间。窄屏时目录显示在内容上方。
 - **每张 NPU 卡**：每行对应一个 NPU / 芯片，主表直接显示 **Health 原始状态、AICore（%）、HBM（%）、Memory（%）**，Health 非 OK 的卡标红。悬停内存占用率可查看已用 / 总量（GiB、MB）；展开“详细信息 → 内存明细”可逐卡查看容量。比例未提供且容量已知时显示原始 MB 数值，例如 `0/0`，数据缺失时显示 `—`。悬停 NPU 可查看型号、Bus、温度及功耗。
 - **详细信息**：展开节点底部“详细信息”，查看内存明细、最近 120 次采集的平均 AICore 趋势、进程列表和原始输出。长错误信息在节点主表中压缩展示，完整错误保留在原始输出。进程列表包含 PID、名称、显存和容器 PID。失败采集显示为曲线空缺，历史仅保存在内存，重启后重新累计。
 
@@ -104,14 +105,17 @@ dmidecode -s system-product-name
   "interval": 5,
   "timeout": 15,
   "identity_file": "C:/Users/yourname/.ssh/id_ed25519",
-  "npu_smi_path": "npu-smi",
   "nodes": [
-    { "host": "example-key-node", "user": "your-user", "port": 22, "auth_type": "key" },
+    {
+      "host": "example-key-node",
+      "user": "your-user",
+      "port": 22,
+      "auth_type": "key"
+    },
     {
       "host": "example-password-node",
       "auth_type": "password",
-      "password": "replace-with-node-password",
-      "npu_smi_path": "/usr/local/bin/npu-smi"
+      "password": "replace-with-node-password"
     }
   ]
 }
@@ -130,8 +134,8 @@ python src/python/monitor.py --config nodes.json --identity ~/.ssh/id_ed25519 --
 # 追加节点，可重复 --node；用户名留空时使用 SSH 配置
 python src/python/monitor.py --node your-user@example-node --node example-alias
 
-# 指定远端 npu-smi 路径和采集总超时
-python src/python/monitor.py --npu-smi /usr/local/bin/npu-smi --timeout 20
+# 设置采集总超时
+python src/python/monitor.py --timeout 20
 
 # 完全离线演示：不建立 SSH 连接，也不覆盖正式配置
 python src/python/monitor.py --demo
@@ -156,11 +160,11 @@ python src/python/monitor.py --no-browser --port 8766
 - `Permission denied (publickey)`：检查用户名、私钥和节点的公钥配置。
 - `Permission denied (password)`：检查用户名、节点密码，以及服务器是否允许该账号使用 SSH 密码登录。
 - `Host key verification failed`：先通过普通 SSH 核对服务器指纹。
-- 返回码 `127`：节点上找不到 `npu-smi`，在配置中填写其绝对路径。
+- 返回码 `127`：宿主机上未找到 `npu-smi` 命令，请检查昇腾驱动安装及 SSH 环境的 PATH。
 - 超时：检查节点连通性或增大“采集超时”。
 - 输出未识别：原始输出仍可查看；解析器支持常见双行 NPU 表格和带可选容器 PID 的进程表。
 
-工具执行节点宿主环境中的命令。远端命令路径须为 `npu-smi` 或可执行文件的绝对路径。
+工具通过 SSH 在节点宿主机直接执行固定的 `npu-smi info` 命令及型号查询命令，自动补充常见驱动工具目录到 PATH。节点配置只需填写连接和认证信息。
 
 ## 验证
 

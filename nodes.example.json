@@ -2,7 +2,6 @@
   "interval": 5,
   "timeout": 15,
   "identity_file": "",
-  "npu_smi_path": "npu-smi",
   "nodes": [
     {
       "host": "example-key-node",
