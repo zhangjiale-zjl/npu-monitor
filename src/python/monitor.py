@@ -182,10 +182,11 @@ def stored_config(config):
 
 
 class CollectionError(Exception):
-    def __init__(self, message, raw="", exit_code=None):
+    def __init__(self, message, raw="", exit_code=None, ssh_connected=False):
         super().__init__(message)
         self.raw = raw
         self.exit_code = exit_code
+        self.ssh_connected = ssh_connected
 
 
 class SSHSession:
@@ -196,6 +197,7 @@ class SSHSession:
         self.process = None
         self.lines = None
         self.lock = threading.Lock()
+        self.request_lock = threading.Lock()
         self.closed = False
         self.broker = None
         self.address = None
@@ -318,8 +320,8 @@ class SSHSession:
             self.closed = True
         self._disconnect()
 
-    def query(self):
-        return self._request("NPU_MONITOR_" + secrets.token_hex(16))
+    def query(self, deadline=None):
+        return self._request("NPU_MONITOR_" + secrets.token_hex(16), deadline=deadline)
 
     def query_board(self, device, deadline, device_scope=False):
         # IDs are parsed integers; only this fixed query can enter the protocol.
@@ -334,35 +336,43 @@ class SSHSession:
         return self._request("NPU_SYSTEM_" + secrets.token_hex(16), deadline=deadline)
 
     def _request(self, request, arguments="", deadline=None):
+        deadline = deadline if deadline is not None else time.monotonic() + self.timeout
+        if not self.request_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise CollectionError(f"等待 SSH 会话超过 {self.timeout:g} 秒，请稍后重试")
+        try:
+            return self._request_locked(request, arguments, deadline)
+        finally:
+            self.request_lock.release()
+
+    def _request_locked(self, request, arguments, deadline):
         with self.lock:
             if self.closed:
                 raise CollectionError("采集已停止")
             process, lines = self.process, self.lines
         raw, prelude, size = [], [], 0
+        began = False
         try:
             if process is None:
                 process, lines = self._start()
             process.stdin.write((request + arguments + "\n").encode("ascii"))
             process.stdin.flush()
-            deadline = deadline or time.monotonic() + self.timeout
-            began = False
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise CollectionError(f"采集超过 {self.timeout:g} 秒，下一周期自动重连",
-                                          "".join(raw or prelude))
+                    raise CollectionError(f"采集超过 {self.timeout:g} 秒",
+                                          "".join(raw or prelude), ssh_connected=began)
                 try:
                     line = lines.get(timeout=remaining)
                 except queue.Empty:
-                    raise CollectionError(f"采集超过 {self.timeout:g} 秒，下一周期自动重连",
-                                          "".join(raw or prelude)) from None
+                    raise CollectionError(f"采集超过 {self.timeout:g} 秒",
+                                          "".join(raw or prelude), ssh_connected=began) from None
                 if line is None:
                     process.wait(timeout=5)
                     text = "".join(raw or prelude).strip()
-                    raise CollectionError(text or "SSH 连接已关闭", text, process.returncode)
+                    raise CollectionError(text or "SSH 连接已关闭", text, process.returncode, began)
                 size += len(line.encode("utf-8"))
                 if size > MAX_OUTPUT:
-                    raise CollectionError("npu-smi 输出超过 2 MiB 限制", "".join(raw or prelude))
+                    raise CollectionError("npu-smi 输出超过 2 MiB 限制", "".join(raw or prelude), ssh_connected=began)
                 marker = line.strip()
                 if marker == request + " BEGIN":
                     began = True
@@ -391,7 +401,7 @@ class SSHSession:
             raise
         except (OSError, ValueError) as exc:
             self._disconnect()
-            raise CollectionError(f"SSH 采集失败：{exc}", "".join(raw or prelude)) from exc
+            raise CollectionError(f"SSH 采集失败：{exc}", "".join(raw or prelude), ssh_connected=began) from exc
 
 
 def demo_output(index, tick):
@@ -536,6 +546,9 @@ class Monitor:
         self.paused = False
         self.once = once
         self.workers = {}
+        self.test_slots = threading.BoundedSemaphore(4)
+        self.test_sessions = set()
+        self.closed = False
         self.reconfigure(config, persist=False)
 
     def reconfigure(self, config, persist=True):
@@ -551,7 +564,7 @@ class Monitor:
                 old, new, created = self.workers, {}, []
                 for entry in config["nodes"]:
                     node = Node(**entry)
-                    identity = node.identity_file or config["identity_file"]
+                    identity = (node.identity_file or config["identity_file"]) if node.auth_type == "key" else ""
                     signature = (node, identity, config["timeout"])
                     worker = old.get(node.id)
                     if not worker or worker.signature != signature:
@@ -576,8 +589,77 @@ class Monitor:
             return copy.deepcopy({"demo": self.demo, "paused": self.paused,
                                   "auth_password_supported": True,
                                   "auto_node_names": True,
+                                  "connection_test_supported": True,
                                   "config": config, "server_time": now(),
                                   "nodes": [w.state for w in self.workers.values()]})
+
+    def test_connection(self, data):
+        if not isinstance(data, dict):
+            raise ValueError("请求必须是 JSON 对象")
+        if not self.test_slots.acquire(blocking=False):
+            raise ValueError("已有 4 个节点正在测试，请稍后重试")
+        session, owned = None, False
+        started = time.monotonic()
+        try:
+            with self.lock:
+                current = copy.deepcopy(self.config)
+            config = validate_config({"timeout": data.get("timeout", current["timeout"]),
+                                      "nodes": [data.get("node")]}, self.path.parent, current)
+            node = Node(**config["nodes"][0])
+            identity = ""
+            if node.auth_type == "key":
+                identity = node.identity_file or key_path(data.get("identity_file", current["identity_file"]), self.path.parent)
+            if self.demo:
+                return {"status": "warning", "ssh_ok": None, "npu_ok": None,
+                        "message": "演示模式：不建立真实 SSH 连接", "detail": "", "exit_code": None}
+            with self.lock:
+                if self.closed:
+                    raise ValueError("监控服务已停止")
+                worker = self.workers.get(node.id)
+                if worker and worker.signature == (node, identity, config["timeout"]):
+                    session = worker.session
+                else:
+                    session = SSHSession(node, identity, config["timeout"], self.ssh)
+                    owned = True
+                    self.test_sessions.add(session)
+            with session.lock:
+                reused = not owned and session.process is not None and session.process.poll() is None
+            try:
+                raw, rc = session.query(deadline=time.monotonic() + config["timeout"])
+                if rc:
+                    result = {"status": "warning", "ssh_ok": True, "npu_ok": False,
+                              "message": f"SSH 连接成功 · npu-smi info 返回 {rc}", "detail": raw, "exit_code": rc}
+                else:
+                    parsed = parse_info(raw)
+                    devices = parsed["devices"]
+                    unhealthy = sum(device["health"] != "OK" for device in devices)
+                    message = f"SSH 连接成功 · 已读取 {len(devices)} 个 NPU / 芯片"
+                    if unhealthy:
+                        message += f" · {unhealthy} 个 Health 非 OK"
+                    if parsed["warning"]:
+                        message = "SSH 连接成功 · NPU 输出待确认"
+                    result = {"status": "warning" if parsed["warning"] or unhealthy else "ok",
+                              "ssh_ok": True, "npu_ok": not bool(parsed["warning"]),
+                              "message": message, "detail": parsed["warning"] or "", "exit_code": 0}
+            except (CollectionError, OSError, subprocess.SubprocessError) as exc:
+                connected = getattr(exc, "ssh_connected", False)
+                result = {"status": "warning" if connected else "error", "ssh_ok": connected, "npu_ok": False,
+                          "message": "SSH 已连接 · NPU 命令未完成" if connected else "SSH 连接测试失败",
+                          "detail": str(exc), "exit_code": getattr(exc, "exit_code", None)}
+            if node.password:
+                result["detail"] = result["detail"].replace(node.password, "[已隐藏]")
+            result["detail"] = result["detail"][:4000]
+            result["reused_connection"] = reused
+            if reused:
+                result["message"] += "（复用监控连接）"
+            result["duration_ms"] = round((time.monotonic() - started) * 1000)
+            return result
+        finally:
+            if owned and session:
+                session.close()
+                with self.lock:
+                    self.test_sessions.discard(session)
+            self.test_slots.release()
 
     def control(self, action):
         with self.change_lock:
@@ -595,7 +677,11 @@ class Monitor:
     def close(self):
         with self.change_lock:
             with self.lock:
+                self.closed = True
                 workers = list(self.workers.values())
+                test_sessions = list(self.test_sessions)
+            for session in test_sessions:
+                session.close()
             for worker in workers:
                 worker.stop()
             for worker in workers:
@@ -688,6 +774,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(data, dict):
                     raise ValueError("请求必须是 JSON 对象")
                 self.server.monitor.control(data.get("action"))
+            elif path == "/api/test-connection":
+                self.reply(200, self.server.monitor.test_connection(data))
+                return
             else:
                 self.reply(404, {"error": "接口不存在"})
                 return

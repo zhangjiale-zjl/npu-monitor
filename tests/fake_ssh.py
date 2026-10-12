@@ -15,6 +15,8 @@ if mode.startswith("password"):
         raise SystemExit(255)
 for request in sys.stdin:
     request = request.split()[0]
+    if mode == "slow":
+        time.sleep(.05)
     if mode == "disconnect":
         print("Permission denied (publickey).", flush=True)
         raise SystemExit(255)
@@ -22,6 +24,9 @@ for request in sys.stdin:
         time.sleep(60)
         continue
     print(request + " BEGIN", flush=True)
+    if mode == "command-timeout":
+        time.sleep(60)
+        continue
     if request.startswith("NPU_SYSTEM_"):
         if mode == "system-error":
             print("dmidecode: permission denied", flush=True)

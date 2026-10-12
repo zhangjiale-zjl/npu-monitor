@@ -80,9 +80,9 @@ function el(tag, className, text) {
   return element;
 }
 
-async function api(path, data) {
+async function api(path, data, timeoutMs = 10000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(path, {method: data === undefined ? "GET" : "POST",
       headers: {"X-Monitor-Token": token, "Content-Type": "application/json"},
@@ -427,6 +427,57 @@ async function poll() {
   } finally { polling = false; }
 }
 
+function configNodeValue(fieldset) {
+  const node = {};
+  fieldset.querySelectorAll("[data-field]").forEach(input => {
+    const field = input.dataset.field;
+    if (field !== "password") node[field] = field === "port" ? (input.value ? Number(input.value) : null) : input.value.trim();
+  });
+  const password = fieldset.querySelector('[data-field="password"]').value;
+  if (node.auth_type === "password" && password !== "") node.password = password;
+  return node;
+}
+
+function clearConnectionTest(fieldset) {
+  fieldset.dataset.testVersion = String(Number(fieldset.dataset.testVersion || 0) + 1);
+  fieldset.querySelector(".node-test-result").hidden = true;
+}
+
+async function testConfigNode(fieldset) {
+  const button = fieldset.querySelector(".test-node");
+  const result = fieldset.querySelector(".node-test-result");
+  clearConnectionTest(fieldset);
+  const version = fieldset.dataset.testVersion;
+  button.disabled = true;
+  button.textContent = "测试中…";
+  result.hidden = false;
+  result.className = "node-test-result pending";
+  result.textContent = "正在测试 SSH 连接与宿主机 npu-smi info…";
+  try {
+    const fields = [...fieldset.querySelectorAll("[data-field]:not(:disabled)"), $("timeout")];
+    const invalid = fields.find(input => !input.checkValidity());
+    if (invalid) { invalid.reportValidity(); throw new Error("请检查该节点的连接信息和采集超时。"); }
+    if (!state.connection_test_supported) throw new Error("请重新启动更新后的监控工具，再测试连接。");
+    const timeout = Number($("timeout").value);
+    const response = await api("/api/test-connection", {node: configNodeValue(fieldset),
+      identity_file: $("default-key").value.trim(), timeout}, (timeout + 30) * 1000);
+    if (!fieldset.isConnected || fieldset.dataset.testVersion !== version) return;
+    result.className = "node-test-result " + response.status;
+    result.textContent = response.message + (response.status === "error" && response.exit_code != null ? ` · 返回码 ${response.exit_code}` : "")
+      + (response.duration_ms == null ? "" : ` · ${fmt(response.duration_ms / 1000, 1)} 秒`)
+      + (response.detail ? `\n${response.detail}` : "");
+  } catch (error) {
+    if (fieldset.isConnected && fieldset.dataset.testVersion === version) {
+      result.className = "node-test-result error";
+      result.textContent = error.name === "AbortError" ? "连接测试未完成，请检查本地服务并重试。" : error.message;
+    }
+  } finally { button.disabled = false; button.textContent = "测试连接"; }
+}
+
+for (const id of ["default-key", "timeout"]) $(id).addEventListener("input", () => {
+  $("config-nodes").querySelectorAll("fieldset").forEach(clearConnectionTest);
+});
+
 function addConfigNode(node = {}) {
   const fragment = $("config-node-template").content.cloneNode(true);
   const fieldset = fragment.querySelector("fieldset");
@@ -448,6 +499,9 @@ function addConfigNode(node = {}) {
   }
   auth.addEventListener("change", updateAuth);
   updateAuth();
+  fieldset.querySelector(".test-node").addEventListener("click", () => testConfigNode(fieldset));
+  fieldset.addEventListener("input", () => clearConnectionTest(fieldset));
+  fieldset.addEventListener("change", () => clearConnectionTest(fieldset));
   fieldset.querySelector(".remove-node").addEventListener("click", () => fieldset.remove());
   $("config-nodes").append(fragment);
   return fieldset;
@@ -476,18 +530,7 @@ $("add-node").addEventListener("click", () => addConfigNode());
 
 $("config-form").addEventListener("submit", async event => {
   event.preventDefault();
-  const nodes = [...$("config-nodes").querySelectorAll("fieldset")].map(fieldset => {
-    const node = {};
-    fieldset.querySelectorAll("[data-field]").forEach(input => {
-      const field = input.dataset.field;
-      if (field === "password") {
-        if (node.auth_type === "password" && input.value !== "") node.password = input.value;
-      } else {
-        node[field] = field === "port" ? (input.value ? Number(input.value) : null) : input.value.trim();
-      }
-    });
-    return node;
-  });
+  const nodes = [...$("config-nodes").querySelectorAll("fieldset")].map(configNodeValue);
   $("save-config").disabled = true;
   try {
     if (nodes.some(node => node.auth_type === "password") && !state.auth_password_supported) {
