@@ -614,6 +614,17 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(OSError):
             DashboardServer(self.server.server_port, self.monitor)
 
+    def test_shutdown_requires_token_and_valid_object(self):
+        self.assertEqual(self.request("POST", "/api/shutdown", {})[0], 403)
+        token = {"X-Monitor-Token": self.server.token}
+        self.assertEqual(self.request("POST", "/api/shutdown", [], token)[0], 400)
+        self.assertEqual(self.request("POST", "/api/shutdown", {},
+                                     {**token, "Origin": "https://example.invalid"})[0], 403)
+        self.assertTrue(self.thread.is_alive())
+        self.assertEqual(self.request("POST", "/api/shutdown", {}, token)[0], 200)
+        self.thread.join(timeout=3)
+        self.assertFalse(self.thread.is_alive())
+
     def test_cross_origin_host_and_invalid_config_rejected(self):
         token = {"X-Monitor-Token": self.server.token}
         self.assertEqual(self.request("POST", "/api/config", {"nodes": []},

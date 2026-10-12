@@ -11,6 +11,8 @@
 ```text
 npu-monitor/
 ├── start.cmd
+├── restart.cmd
+├── stop.cmd
 ├── start.ps1
 ├── README.md
 ├── LICENSE
@@ -20,6 +22,7 @@ npu-monitor/
 ├── tests/
 └── src/python/
     ├── monitor.py
+    ├── background.py
     ├── npu_parser.py
     ├── npu_platform.py
     ├── password_auth.py
@@ -32,7 +35,11 @@ npu-monitor/
 
 首次启动显示空看板，可点击“＋ 添加节点”填写自己的连接信息。也可将 `nodes.example.json` 复制为 `nodes.json` 后修改；示例中的地址、用户名和密码均为占位内容。`nodes.json`、采集快照、截图和本机生成的辅助程序不纳入版本控制。
 
-Windows 双击 **`start.cmd`**，自动打开本地看板。启动脚本优先查找已安装的 Python，也支持当前 Codex 自带的 Python。保持启动窗口运行，按 **Ctrl+C** 停止采集并关闭 SSH 连接。命令行选项可传给 `start.cmd`，例如 `start.cmd --interval 2 --no-browser`；演示模式使用 `start.cmd -Demo`。
+Windows 双击 **`start.cmd`**，服务在后台运行并自动打开本地看板，启动成功后命令窗口自动退出。重复启动会打开已运行的看板。双击 **`stop.cmd`** 停止服务并关闭 SSH 连接；双击 **`restart.cmd`** 重启服务，沿用当前服务的启动参数和节点配置。关闭网页不停止监控。
+
+启动脚本优先查找已安装的 Python，也支持当前 Codex 自带的 Python。命令行选项可传给 `start.cmd`，例如 `start.cmd --interval 2 --no-browser`；演示模式使用 `start.cmd -Demo`。启动参数在创建新服务时生效，修改已运行服务的启动参数可执行 `restart.cmd --interval 2`。使用自定义端口时，停止和重启命令指定相同端口，例如 `stop.cmd --port 8766`、`restart.cmd --port 8766`；自动分配端口的服务使用 `--port 0` 管理。脚本只管理当前目录通过启动脚本启动的服务。
+
+后台日志和服务记录保存在本机 `output` 目录，不进入 Git 仓库。启动失败时命令窗口显示错误并保留，详细日志见 `output/background-*.stderr.log`；正常输出见对应的 `stdout.log`。排查问题可执行 `start.cmd -Foreground` 在前台运行，按 **Ctrl+C** 停止并关闭 SSH 连接；`--once` 和 `--help` 自动在前台执行。
 
 也可在终端启动：
 
@@ -110,7 +117,7 @@ Host example-npu
 
 密码**以明文保存在本机配置文件**，输入框显示为密码掩码。网页接口和 `--once` 输出不返回密码，只返回 `password_set` 标记；重新编辑时输入框为空，留空保留已存密码，填写新密码则替换，切换密钥登录会清除已存密码。密码不会放入 SSH 命令行或环境变量，辅助程序通过一次性本机回环接口读取它，两种认证方式均校验服务器指纹。辅助接口不使用系统代理，也不访问公网。
 
-更新工具后，停止启动窗口中的旧服务并重新运行 `start.cmd` 或 `python src/python/monitor.py`，即可加载当前功能。Linux / macOS 使用随工具提供的 Python 与 shell 辅助脚本；Windows 首次使用密码登录时，通过系统自带的 .NET Framework 编译器从源码生成辅助程序。
+Windows 更新工具后执行 `restart.cmd` 加载当前功能。在终端直接运行 Python 时，按 Ctrl+C 停止服务，再重新执行 `python src/python/monitor.py` 或 `python3 src/python/monitor.py`。Linux / macOS 使用随工具提供的 Python 与 shell 辅助脚本；Windows 首次使用密码登录时，通过系统自带的 .NET Framework 编译器从源码生成辅助程序。
 
 示例：
 
@@ -205,6 +212,8 @@ node tests/test_host_key_help.js
 ```
 
 测试使用完全合成的 `npu-smi` 双行表格，覆盖设备、健康状态、进程与容器 PID、无 HBM 表格、未知指标、密钥路径和配置校验、地址与 SSH 别名去重、自动命名、A2/A3/A5 型号识别、服务器型号与只读回退、型号查询缓存及故障隔离、两种认证方式下的 SSH 会话复用、密码错误、密码保留与替换、切换密钥时清除密码、网页接口不返回密码、未保存节点的连接测试、测试与采集并发复用、SSH 连接与 NPU 命令故障区分、测试不修改配置与历史、断线重连、超时恢复、输出上限、暂停和动态周期、节点故障隔离及本地接口访问约束。原生 OpenSSH 密码辅助测试使用临时加密测试密钥，传输测试使用本地模拟子进程，HTTP 测试只连接本机；测试凭据均为合成数据，不会登录真实节点。
+
+后台生命周期测试使用临时本机演示服务，验证停止接口认证、停止后清理服务记录和单次采集的 JSON 输出。Windows 下还验证 CMD 启动后立即退出、重复启动复用服务、重启保留参数、停止释放端口，以及含空格和特殊字符的项目路径。
 
 表格字段参考 [昇腾官方 npu-smi 输出示例](https://www.hiascend.com/document/detail/zh/mindcluster/70rc1/faultdiag/faultdiagug/mindxdlFDUG027.html)。
 

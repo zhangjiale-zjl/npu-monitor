@@ -830,6 +830,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/test-connection":
                 self.reply(200, self.server.monitor.test_connection(data))
                 return
+            elif path == "/api/shutdown":
+                if not isinstance(data, dict):
+                    raise ValueError("请求必须是 JSON 对象")
+                self.reply(200, {"ok": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             else:
                 self.reply(404, {"error": "接口不存在"})
                 return
@@ -851,6 +857,7 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
     parser.add_argument("--demo", action="store_true", help="演示模式，完全不连接 SSH")
     parser.add_argument("--once", action="store_true", help="采集一次并向标准输出打印 JSON")
+    parser.add_argument("--instance-file", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     path = args.config.expanduser().resolve()
     try:
@@ -879,6 +886,7 @@ def main():
         return 2
     monitor = Monitor(config, path, args.demo, once=args.once)
     server = None
+    instance_written = False
     try:
         if args.once:
             deadline = time.monotonic() + config["timeout"] + 5
@@ -890,14 +898,23 @@ def main():
             print(json.dumps(snapshot, ensure_ascii=False, indent=2))
             return 0 if all(node["status"] == "ok" for node in snapshot["nodes"]) else 1
         server = DashboardServer(args.port, monitor)
+        if args.instance_file:
+            args.instance_file.parent.mkdir(parents=True, exist_ok=True)
+            temporary = args.instance_file.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"pid": os.getpid(), "root": str(ROOT),
+                                            "origin": server.origin, "token": server.token}), encoding="utf-8")
+            if os.name != "nt":
+                temporary.chmod(0o600)
+            temporary.replace(args.instance_file)
+            instance_written = True
         print(f"本地看板：{server.origin}", flush=True)
         print("演示模式：不连接任何节点" if args.demo else f"监控 {len(config['nodes'])} 个节点；周期 {config['interval']:g} 秒", flush=True)
-        print("按 Ctrl+C 停止并关闭 SSH 连接", flush=True)
+        print("后台监控已启动" if args.instance_file else "按 Ctrl+C 停止并关闭 SSH 连接", flush=True)
         if not args.no_browser:
             webbrowser.open(server.origin)
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
-        print("\n监控已停止，SSH 连接已关闭。")
+        pass
     except OSError as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
         return 2
@@ -905,6 +922,14 @@ def main():
         if server:
             server.server_close()
         monitor.close()
+        if instance_written:
+            try:
+                instance = json.loads(args.instance_file.read_text(encoding="utf-8-sig"))
+                if instance.get("pid") == os.getpid() and instance.get("token") == server.token:
+                    args.instance_file.unlink(missing_ok=True)
+            except (OSError, ValueError, AttributeError):
+                pass
+    print("监控已停止，SSH 连接已关闭。", flush=True)
     return 0
 
 
