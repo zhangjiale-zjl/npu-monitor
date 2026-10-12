@@ -12,6 +12,7 @@ let selectedModel = null;
 let directoryCollapsed = false;
 let directoryHovered = false;
 let directoryFocused = false;
+let directoryHoverTimer;
 const directoryHoverMedia = window.matchMedia("(min-width: 761px) and (hover: hover) and (pointer: fine)");
 try { directoryCollapsed = localStorage.getItem("npu-monitor-directory-collapsed") === "true"; } catch (_) {}
 
@@ -29,20 +30,31 @@ function applyDirectoryState() {
   toggle.querySelector("span").textContent = floating ? "固定" : directoryCollapsed ? "›" : "‹";
 }
 
+function cancelDirectoryHover() {
+  clearTimeout(directoryHoverTimer);
+  directoryHoverTimer = null;
+  directoryHovered = false;
+}
+
 $("sidebar-toggle").addEventListener("click", () => {
   directoryCollapsed = !directoryCollapsed;
-  directoryHovered = false;
+  cancelDirectoryHover();
   directoryFocused = false;
   try { localStorage.setItem("npu-monitor-directory-collapsed", String(directoryCollapsed)); } catch (_) {}
   applyDirectoryState();
 });
 $("model-sidebar").addEventListener("pointerenter", event => {
-  if (event.pointerType !== "mouse" || !directoryHoverMedia.matches) return;
-  directoryHovered = true;
-  applyDirectoryState();
+  if (event.pointerType !== "mouse" || !directoryHoverMedia.matches || !directoryCollapsed) return;
+  cancelDirectoryHover();
+  directoryHoverTimer = setTimeout(() => {
+    directoryHoverTimer = null;
+    if (!directoryCollapsed || !directoryHoverMedia.matches) return;
+    directoryHovered = true;
+    applyDirectoryState();
+  }, 500);
 });
 $("model-sidebar").addEventListener("pointerleave", () => {
-  directoryHovered = false;
+  cancelDirectoryHover();
   applyDirectoryState();
 });
 $("model-sidebar").addEventListener("focusin", event => {
@@ -55,7 +67,7 @@ $("model-sidebar").addEventListener("focusout", event => {
   applyDirectoryState();
 });
 directoryHoverMedia.addEventListener("change", () => {
-  directoryHovered = false;
+  cancelDirectoryHover();
   directoryFocused = false;
   applyDirectoryState();
 });
