@@ -493,6 +493,10 @@ function addConfigNode(node = {}) {
   function updateAuth() {
     const byPassword = auth.value === "password";
     fieldset.querySelector(".password-field").hidden = !byPassword;
+    const note = fieldset.querySelector(".auth-note");
+    note.hidden = !byPassword && !node.password_set;
+    note.textContent = byPassword ? "密码以明文保存在本机配置文件；留空保留已有密码。"
+      : "保存为密钥登录后，将清除该节点已保存的密码。";
     password.disabled = !byPassword;
     password.required = byPassword && !node.password_set;
     fieldset.querySelector('[data-field="identity_file"]').disabled = byPassword;
