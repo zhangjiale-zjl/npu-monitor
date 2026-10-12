@@ -13,15 +13,42 @@ let directoryCollapsed = false;
 let directoryHovered = false;
 let directoryFocused = false;
 let directoryHoverTimer;
+let directoryWidth = 168;
+let directoryResize = null;
+const directoryDesktopMedia = window.matchMedia("(min-width: 761px)");
 const directoryHoverMedia = window.matchMedia("(min-width: 761px) and (hover: hover) and (pointer: fine)");
-try { directoryCollapsed = localStorage.getItem("npu-monitor-directory-collapsed") === "true"; } catch (_) {}
+try {
+  directoryCollapsed = localStorage.getItem("npu-monitor-directory-collapsed") === "true";
+  const width = Number(localStorage.getItem("npu-monitor-directory-width"));
+  if (Number.isFinite(width) && width >= 144 && width <= 420) directoryWidth = width;
+} catch (_) {}
+
+function directoryMaxWidth() {
+  return Math.max(144, Math.min(420, document.documentElement.clientWidth - 380));
+}
+
+function applyDirectoryWidth() {
+  const width = Math.min(directoryWidth, directoryMaxWidth());
+  $("model-sidebar").style.setProperty("--directory-width", `${width}px`);
+  const handle = $("directory-resize");
+  handle.setAttribute("aria-valuemax", String(directoryMaxWidth()));
+  handle.setAttribute("aria-valuenow", String(width));
+  handle.setAttribute("aria-valuetext", `${width} 像素`);
+}
+
+function saveDirectoryWidth(width) {
+  directoryWidth = Math.max(144, Math.min(directoryMaxWidth(), Math.round(width)));
+  applyDirectoryWidth();
+  try { localStorage.setItem("npu-monitor-directory-width", String(directoryWidth)); } catch (_) {}
+}
 
 function applyDirectoryState() {
-  const floating = directoryCollapsed && directoryHoverMedia.matches && (directoryHovered || directoryFocused);
+  const floating = directoryCollapsed && directoryHoverMedia.matches && (directoryHovered || directoryFocused || directoryResize !== null);
   $("model-sidebar").classList.toggle("collapsed", directoryCollapsed);
   $("model-sidebar").classList.toggle("floating-open", floating);
   $("model-directory-content").hidden = directoryCollapsed && !floating;
   $("directory-hover-hint").hidden = !floating;
+  $("directory-resize").hidden = !directoryDesktopMedia.matches || (directoryCollapsed && !floating);
   const toggle = $("sidebar-toggle");
   const label = floating ? "固定展开机型目录" : directoryCollapsed ? "展开机型目录" : "收起机型目录";
   toggle.setAttribute("aria-expanded", String(!directoryCollapsed || floating));
@@ -37,6 +64,7 @@ function cancelDirectoryHover() {
 }
 
 $("sidebar-toggle").addEventListener("click", () => {
+  finishDirectoryResize();
   directoryCollapsed = !directoryCollapsed;
   cancelDirectoryHover();
   directoryFocused = false;
@@ -54,6 +82,7 @@ $("model-sidebar").addEventListener("pointerenter", event => {
   }, 500);
 });
 $("model-sidebar").addEventListener("pointerleave", () => {
+  if (directoryResize) return;
   cancelDirectoryHover();
   applyDirectoryState();
 });
@@ -67,10 +96,58 @@ $("model-sidebar").addEventListener("focusout", event => {
   applyDirectoryState();
 });
 directoryHoverMedia.addEventListener("change", () => {
+  finishDirectoryResize();
   cancelDirectoryHover();
   directoryFocused = false;
   applyDirectoryState();
 });
+const directoryResizeHandle = $("directory-resize");
+directoryResizeHandle.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || !directoryDesktopMedia.matches || directoryResize) return;
+  event.preventDefault();
+  clearTimeout(directoryHoverTimer);
+  directoryHoverTimer = null;
+  directoryResize = {pointerId: event.pointerId, startX: event.clientX,
+    startWidth: $("model-sidebar").querySelector(".sidebar-panel").getBoundingClientRect().width};
+  directoryResizeHandle.setPointerCapture(event.pointerId);
+  document.body.classList.add("directory-resizing");
+  applyDirectoryState();
+});
+directoryResizeHandle.addEventListener("pointermove", event => {
+  if (!directoryResize || event.pointerId !== directoryResize.pointerId) return;
+  directoryWidth = Math.max(144, Math.min(directoryMaxWidth(),
+    Math.round(directoryResize.startWidth + event.clientX - directoryResize.startX)));
+  applyDirectoryWidth();
+});
+
+function finishDirectoryResize(event) {
+  if (!directoryResize || (event && event.pointerId !== directoryResize.pointerId)) return;
+  const pointerId = directoryResize.pointerId;
+  directoryResize = null;
+  if (directoryResizeHandle.hasPointerCapture(pointerId)) directoryResizeHandle.releasePointerCapture(pointerId);
+  document.body.classList.remove("directory-resizing");
+  directoryHovered = !!event && $("model-sidebar").contains(document.elementFromPoint(event.clientX, event.clientY));
+  saveDirectoryWidth(directoryWidth);
+  applyDirectoryState();
+}
+
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  directoryResizeHandle.addEventListener(type, finishDirectoryResize);
+}
+directoryResizeHandle.addEventListener("keydown", event => {
+  const width = Number(directoryResizeHandle.getAttribute("aria-valuenow"));
+  const next = {ArrowLeft: width - 16, ArrowRight: width + 16, Home: 144, End: directoryMaxWidth()}[event.key];
+  if (next === undefined) return;
+  event.preventDefault();
+  saveDirectoryWidth(next);
+});
+directoryResizeHandle.addEventListener("dblclick", () => saveDirectoryWidth(168));
+window.addEventListener("resize", () => {
+  finishDirectoryResize();
+  applyDirectoryWidth();
+  applyDirectoryState();
+});
+applyDirectoryWidth();
 applyDirectoryState();
 
 function el(tag, className, text) {
@@ -411,6 +488,7 @@ function render() {
   }
   $("nodes").replaceChildren(...groups.map(([model, members]) => modelSection(model, members)));
   $("empty").hidden = state.nodes.length > 0;
+  applyDirectoryWidth();
 }
 
 async function poll() {
