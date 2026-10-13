@@ -170,6 +170,20 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(device["memory"]["percent"])
         self.assertIsNone(device["temperature_c"])
 
+    def test_process_memory_and_hbm_are_independent_of_compute_utilization(self):
+        samples = [FIXTURE, A3_FIXTURE.replace("| 0 0 | 0000:20:00.0 | 10 0 / 0", "| 0 0 | 0000:20:00.0 | 0 0 / 0"),
+                   A5_FIXTURE]
+        for raw in samples:
+            with self.subTest(version=parse_info(raw)["version"]):
+                result = parse_info(raw)
+                device = result["devices"][0]
+                self.assertEqual(device["utilization_percent"], 0)
+                self.assertEqual(device["hbm"]["used_mb"], 1024)
+                self.assertEqual(device["memory"], {"used_mb": 0, "total_mb": 0, "percent": None})
+                self.assertTrue(any(process["npu_id"] == device["npu_id"] and process["memory_mb"] > 0
+                                    for process in result["processes"]))
+                self.assertIsNone(result["warning"])
+
     def test_unrecognized_format_warns(self):
         self.assertTrue(parse_info("unsupported device output")["warning"])
         self.assertIsNone(memory("0 / 0")["percent"])

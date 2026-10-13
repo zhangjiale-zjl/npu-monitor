@@ -217,17 +217,24 @@ function meter(value) {
   return bar;
 }
 
-function memoryCell(data) {
-  const cell = el("td", "memory-cell");
-  const fallback = data.used_mb != null && data.total_mb != null ? `${fmt(data.used_mb)}/${fmt(data.total_mb)}` : "—";
-  cell.append(el("span", "metric-number", data.percent == null ? fallback : `${fmt(data.percent, 1)}%`));
-  cell.title = `已用 / 总量：${memoryAmounts(data)} GiB（${fmt(data.used_mb)} / ${fmt(data.total_mb)} MB）` + (data.percent == null ? "；占用比例未提供" : `；占用 ${fmt(data.percent, 1)}%`);
-  cell.setAttribute("aria-label", cell.title);
-  return cell;
+function hbmAmounts(data, unit = 1, digits = null) {
+  if (data.total_mb === 0 || (data.used_mb == null && data.total_mb == null)) return "—";
+  const amount = value => value == null ? "—" : digits == null ? String(value / unit) : fmt(value / unit, digits);
+  return `${amount(data.used_mb)}/${amount(data.total_mb)}`;
 }
 
-function memoryAmounts(data) {
-  return `${fmt(data.used_mb == null ? null : data.used_mb / 1024, 1)} / ${fmt(data.total_mb == null ? null : data.total_mb / 1024, 1)}`;
+function hbmTitle(data) {
+  const raw = `${data.used_mb ?? "—"} / ${data.total_mb ?? "—"} MB`;
+  const rate = data.total_mb === 0 ? "未提供有效总容量" : data.percent == null ? "占用比例未提供" : `占用 ${fmt(data.percent, 1)}%`;
+  return `HBM 已用 / 总量：${hbmAmounts(data, 1024, 1)} GiB（${raw}）；${rate}`;
+}
+
+function hbmCell(data) {
+  const cell = el("td", "hbm-cell");
+  cell.append(el("span", "metric-number", hbmAmounts(data)));
+  cell.title = hbmTitle(data);
+  cell.setAttribute("aria-label", cell.title);
+  return cell;
 }
 
 function deviceTable(devices, name) {
@@ -236,12 +243,18 @@ function deviceTable(devices, name) {
   const thead = el("thead");
   const heading = el("tr");
   const usageLabel = utilizationLabel(devices);
-  [deviceColumn(devices), "Health", usageLabel, "HBM", "Memory"].forEach(text => {
+  [deviceColumn(devices), "Health", usageLabel, "HBM-Usage"].forEach(text => {
     const th = el("th", "", text); th.scope = "col"; heading.append(th);
     if (text === "NPU / Die") th.title = "NPU ID（卡号）/ Chip ID（卡内 die）；Phy-ID 见悬停信息";
     if (text === "NPU ID") th.title = "NPU ID（卡号）；当前输出未提供 Chip / die 编号";
-    if ([usageLabel, "HBM", "Memory"].includes(text)) th.append(el("span", "column-unit", "%"));
-    if (["HBM", "Memory"].includes(text)) th.title = "内存占用率；悬停查看已用 / 总量，详细信息中可展开内存明细";
+    if (text === usageLabel) {
+      th.append(el("span", "column-unit", "%"));
+      th.title = "npu-smi 当前采样利用率，与 HBM 显存占用分别显示。";
+    }
+    if (text === "HBM-Usage") {
+      th.append(el("span", "column-unit", "MB"));
+      th.title = "HBM 显存已用 / 总量（MB）；悬停查看 GiB 和占用比例。";
+    }
   });
   thead.append(heading);
   const tbody = el("tbody");
@@ -259,8 +272,10 @@ function deviceTable(devices, name) {
     health.append(el("span", "health-badge" + (device.health === "OK" ? " healthy" : " abnormal"), device.health || "—"));
     const utilization = el("td", "utilization-cell");
     const usage = utilizationValue(device);
+    utilization.title = usage == null ? "npu-smi 未提供当前利用率"
+      : `npu-smi 当前采样 ${usageLabel}：${fmt(usage, 1)}%；进程驻留与计算利用率分别显示。`;
     utilization.append(el("div", "metric-values", usage == null ? "—" : `${fmt(usage, 1)}%`), meter(usage));
-    row.append(id, health, utilization, memoryCell(device.hbm), memoryCell(device.memory));
+    row.append(id, health, utilization, hbmCell(device.hbm));
     tbody.append(row);
   });
   table.append(thead, tbody);
@@ -385,11 +400,11 @@ function nodeCard(node) {
     ? `服务器型号：${node.server_model} · 来源：${node.server_model_source === "sysfs" ? "系统 DMI 文件" : node.server_model_source === "demo" ? "演示数据" : "dmidecode"}`
     : (node.server_model_error || "等待服务器型号查询")));
   if (node.devices.length) {
-    const memory = detail(node.id, "memory", "内存明细 · 已用 / 总量");
+    const memory = detail(node.id, "memory", "HBM 显存明细 · 已用 / 总量");
     const table = el("table");
-    table.setAttribute("aria-label", `${node.name} NPU 内存用量`);
+    table.setAttribute("aria-label", `${node.name} NPU HBM 显存用量`);
     const thead = el("thead"); const heading = el("tr");
-    [deviceColumn(node.devices), "HBM（GiB）", "Memory（GiB）"].forEach(text => {
+    [deviceColumn(node.devices), "HBM（GiB）"].forEach(text => {
       const th = el("th", "", text); th.scope = "col"; heading.append(th);
     });
     thead.append(heading);
@@ -398,11 +413,9 @@ function nodeCard(node) {
       const row = el("tr");
       const id = el("th", "device-id", deviceId(device)); id.scope = "row";
       row.append(id);
-      [device.hbm, device.memory].forEach(data => {
-        const cell = el("td", "", memoryAmounts(data));
-        cell.title = `${fmt(data.used_mb)} / ${fmt(data.total_mb)} MB`;
-        row.append(cell);
-      });
+      const cell = el("td", "", hbmAmounts(device.hbm, 1024, 1));
+      cell.title = hbmTitle(device.hbm);
+      row.append(cell);
       tbody.append(row);
     });
     table.append(thead, tbody);
