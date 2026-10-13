@@ -14,11 +14,12 @@ class Element {
   append(...items) { this.children.push(...items); }
   setAttribute(name, value) { this.attributes[name] = value; }
 }
-const context = {el: (...args) => new Element(...args), document: {
+const context = {serviceDisconnected: false, el: (...args) => new Element(...args), document: {
   createElementNS: (_, tag) => new Element(tag)}};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf("const fmt ="), source.indexOf("function statusText(")), context);
 vm.runInContext(source.slice(source.indexOf("function meter("), source.indexOf("function detail(")), context);
+vm.runInContext(source.slice(source.indexOf("function processBadge("), source.indexOf("function meter(")), context);
 vm.runInContext("this.view = {avg, deviceId, deviceColumn, dieCountText, utilizationLabel};", context);
 
 const a5 = Array.from({length: 8}, (_, npu_id) => ({npu_id, chip_id: null, name: "Ascend950PR",
@@ -68,4 +69,26 @@ assert.equal(context.hbmCell({used_mb: 0.5, total_mb: 8.5, percent: 5.88}).child
 assert.match(context.hbmCell({used_mb: 0.5, total_mb: 8.5, percent: 5.88}).title, /0\.5 \/ 8\.5 MB/);
 assert.equal(context.hbmAmounts({used_mb: 1024, total_mb: 65536}, 1024, 1), "1.0/64.0");
 assert.match(context.sparkline([{value: 0}, {value: 100}], "NPU Util").attributes["aria-label"], /NPU Util/);
-console.log("Device view checks passed: HBM used/total MB, zero/unknown capacity, no Memory column, actual sampled utilization, A5 NPU Util, A3 dies and trend labels.");
+
+const processNode = {status: "ok", devices: a3, processes: [], warning: null,
+  raw: "| NPU Chip | Process id | Process name | Process memory(MB) |\n| No running processes found |"};
+let badge = context.processBadge({...processNode, processes: [{pid: 100, npu_id: 0, chip_id: 0},
+  {pid: 100, npu_id: 1, chip_id: 0}, {pid: 200, npu_id: 1, chip_id: 1}]});
+assert.equal(badge.text, "有进程 · 2 个");
+assert.match(badge.className, /occupied/);
+assert.match(badge.title, /3 条 NPU \/ die 进程记录/);
+assert.equal(badge.attributes["aria-label"], "节点进程占用：有进程 · 2 个");
+assert.equal(context.processBadge({...processNode, devices: a5, processes: [{pid: 100}]}).text, "有进程 · 1 个");
+assert.equal(context.processBadge(processNode).text, "无进程");
+assert.equal(context.processBadge({...processNode, raw: "| Process ID Process name |"}).text, "无进程");
+assert.equal(context.processBadge({...processNode, raw: "\x1b[32m" + processNode.raw + "\x1b[0m"}).text, "无进程");
+for (const changed of [{status: "error"}, {status: "pending"}, {status: "warning"}, {warning: "Partial output"},
+  {raw: ""}, {devices: []}, {raw: processNode.raw + "\n| 0 1 | 300 | worker | NA |"},
+  {raw: "| Process ID Process name |\n| unknown format |"}]) {
+  assert.equal(context.processBadge({...processNode, ...changed}).text, "进程未知");
+}
+assert.equal(context.processBadge({...processNode, status: "warning", processes: [{pid: 100}]}).text, "有进程 · 1 个");
+context.serviceDisconnected = true;
+assert.equal(context.processBadge({...processNode, processes: [{pid: 100}]}).text, "进程未知");
+context.serviceDisconnected = false;
+console.log("Device view checks passed: process occupancy/unknown states, PID deduplication, HBM used/total, actual sampled utilization and A2/A3/A5 display.");

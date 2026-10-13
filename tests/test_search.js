@@ -41,7 +41,8 @@ function harness() {
     {id: "127.0.0.3:22", name: "Synthetic Gamma", address: "127.0.0.3", host: "gamma-alias", server_model: "Model A", platform: "A5"}
   ].map(node => ({...node, status: "ok", devices: [{npu_id: 0, chip_id: 0, health: "OK"}]}));
   const context = {state: {nodes, paused: false, demo: false, config: {interval: 5, model_order: [], node_order: {}}},
-    FolderUI: {selected: "custom-folder", drag: null, current: () => null}, selectedModel: "Model Z", lastRender: "",
+    FolderUI: {selected: "custom-folder", drag: null, current: () => null}, serviceDisconnected: false,
+    selectedModel: "Model Z", lastRender: "",
     directoryClickSuppressedUntil: 0, performance: {now: () => 100},
     document: {activeElement: get("dashboard-search"), addEventListener: (name, handler) => { listeners[name] = handler; }},
     $: get, el: (...args) => new Element(...args), applyDirectoryWidth: () => {},

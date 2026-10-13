@@ -209,6 +209,37 @@ function statusText(node) {
   return "连接正常";
 }
 
+function processBadge(node) {
+  let kind = "unknown", text = "进程未知", reason = "等待有效的进程采集结果。";
+  const processes = node.processes || [];
+  if (serviceDisconnected || node.status === "error" || node.status === "pending") {
+    reason = "当前采集不可用，无法确认进程占用。";
+  } else if (processes.length) {
+    const pids = new Set(processes.map(process => process.pid).filter(pid => Number.isInteger(pid) && pid > 0));
+    kind = "occupied";
+    text = pids.size ? `有进程 · ${pids.size} 个` : "有进程";
+    reason = `已识别 ${pids.size} 个不同 PID，共 ${processes.length} 条 NPU / die 进程记录；同一 PID 只计一个。`;
+  } else if (node.status === "ok" && !node.warning && node.devices.length) {
+    const lines = (node.raw || "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").split(/\r?\n/);
+    const header = lines.findIndex(line => /process\s+id/i.test(line) && /process\s+name/i.test(line));
+    const unrecognized = header >= 0 && lines.slice(header + 1).some(line => {
+      if (!line.trimStart().startsWith("|")) return false;
+      const value = line.replace(/\|/g, " ").trim();
+      return value && !/no running processes found/i.test(value)
+        && !(/process\s+id/i.test(value) && /process\s+name/i.test(value));
+    });
+    if (header >= 0 && !unrecognized) {
+      kind = "empty";
+      text = "无进程";
+      reason = "最近一次采集的进程表未列出运行进程。";
+    } else reason = "进程表未完整识别，无法确认是否有进程；请查看原始输出。";
+  } else reason = "采集输出待确认，无法确认进程占用。";
+  const badge = el("span", "process-badge process-" + kind, text);
+  badge.title = reason + " 依据最近一次进程列表，可展开详细信息查看；进程驻留与计算利用率分别显示。";
+  badge.setAttribute("aria-label", "节点进程占用：" + text);
+  return badge;
+}
+
 function meter(value) {
   const bar = el("div", "meter" + (value == null ? " unavailable" : ""));
   const fill = el("div", "meter-fill");
@@ -360,7 +391,7 @@ function nodeCard(node) {
   const identity = el("div", "node-identity");
   const title = el("h4", "", node.name);
   const badHealth = node.devices.some(d => d.health !== "OK");
-  title.append(el("span", "status-pill " + (badHealth ? "error" : node.status), statusText(node)));
+  title.append(el("span", "status-pill " + (badHealth ? "error" : node.status), statusText(node)), processBadge(node));
   const config = state.config.nodes.find(n => n.id === node.id);
   const models = [...new Set(node.devices.map(device => device.name))].join(" / ");
   identity.append(title, el("div", "node-address", (config?.user ? `${config.user}@` : "") + node.host + (config?.port ? `:${config.port}` : "") + (models ? ` · ${models}` : "")));
@@ -876,13 +907,14 @@ function render() {
   if (selectedModel !== null && !allGroups.some(([model]) => model === selectedModel)) selectedModel = null;
   const searching = NodeSearch.active();
   const signature = JSON.stringify([state.nodes, state.paused, state.config, selectedModel, FolderUI.selected,
-    NodeSearch.query, NodeSearch.selectedId]);
+    NodeSearch.query, NodeSearch.selectedId, serviceDisconnected]);
   if (signature === lastRender) return;
   lastRender = signature;
   $("demo-label").hidden = !state.demo;
   $("pause").textContent = state.paused ? "继续采集" : "暂停采集";
   $("refresh").disabled = state.paused;
-  $("poll-state").textContent = state.paused ? "采集已暂停" : `每 ${state.config.interval} 秒采集`;
+  $("poll-state").textContent = serviceDisconnected ? "数据已停止更新"
+    : state.paused ? "采集已暂停" : `每 ${state.config.interval} 秒采集`;
   if (document.activeElement !== $("interval")) $("interval").value = state.config.interval;
   const groups = searching ? modelGroups(NodeSearch.filter(state.nodes)) : folder ? [[folder.name, FolderUI.members(folder)]]
     : selectedModel === null ? allGroups : allGroups.filter(([model]) => model === selectedModel);
@@ -930,6 +962,7 @@ async function poll() {
     $("notice").className = "notice error";
     $("notice").hidden = false;
     lastRender = "";
+    render();
   } finally { polling = false; }
 }
 

@@ -73,6 +73,16 @@ async function main() {
   h.save.resolve({ok: true, model_order: ["Model Z", "Model A"]});
   await autoSave;
   assert.deepEqual(plain(h.context.state.config.model_order), ["Model Z", "Model A"]);
+
+  h = harness();
+  h.get.reject(new Error("Synthetic service disconnected"));
+  await h.context.poll();
+  assert.equal(h.context.serviceDisconnected, true);
+  assert.equal(h.renders.length, 1); // Render unavailable process occupancy immediately.
+  h.context.api = async () => ({config: h.context.state.config, demo: false});
+  await h.context.poll();
+  assert.equal(h.context.serviceDisconnected, false);
+  assert.equal(h.renders.length, 2);
   console.log("Directory ordering checks passed: automatic save, independent node order, failure rollback, focus and stale polling.");
 }
 
