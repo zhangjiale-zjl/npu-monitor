@@ -6,6 +6,7 @@ const FolderUI = {
   drag: null,
   editing: null,
   editingNode: null,
+  addingFolder: null,
 
   folders() { return state?.config?.folders || []; },
   current() {
@@ -65,17 +66,23 @@ const FolderUI = {
         this.refresh();
       });
       row.insertBefore(expand, row.children[1]);
+      const addNodes = el("button", "folder-add-nodes", "＋");
+      addNodes.type = "button";
+      addNodes.setAttribute("aria-label", "向目录 " + folder.name + " 添加节点");
+      addNodes.title = "选择一个或多个节点加入目录";
+      addNodes.addEventListener("pointerdown", event => event.stopPropagation());
+      addNodes.addEventListener("click", () => this.addNodes(folder));
       const more = el("button", "folder-more", "⋯");
       more.type = "button";
       more.setAttribute("aria-label", "设置目录 " + folder.name);
       more.title = "重命名或删除目录";
       more.addEventListener("pointerdown", event => event.stopPropagation());
       more.addEventListener("click", () => this.edit(folder));
-      row.append(more);
+      row.append(addNodes, more);
       if (this.expanded.has(folder.id)) {
         const members = el("div", "folder-members");
         members.setAttribute("role", "list");
-        if (!nodes.length) members.append(el("p", "folder-no-members", "拖入节点加入此目录"));
+        if (!nodes.length) members.append(el("p", "folder-no-members", "点击目录旁 ＋ 选择节点"));
         for (const node of nodes) {
           const member = el("div", "folder-member");
           member.setAttribute("role", "listitem");
@@ -106,7 +113,7 @@ const FolderUI = {
       }
       list.append(row);
     }
-    if (!this.folders().length) list.append(el("p", "folder-no-members", "创建目录后，可拖入节点"));
+    if (!this.folders().length) list.append(el("p", "folder-no-members", "创建目录后，可选择或拖入节点"));
     section.append(list);
     return section;
   },
@@ -141,6 +148,51 @@ const FolderUI = {
     $("node-folders-save").disabled = options.length === 0;
     $("node-folders-error").hidden = true;
     $("node-folders-dialog").showModal();
+  },
+  addNodes(folder) {
+    if (directorySaving || this.drag) return;
+    this.addingFolder = folder.id;
+    $("folder-nodes-title").textContent = "添加节点 · " + folder.name;
+    $("folder-nodes-search").value = "";
+    const members = new Set(folder.node_ids);
+    const options = [...state.nodes].sort(compareNodeAddresses).map(node => {
+      const label = el("label", "node-folder-option folder-node-option");
+      label.dataset.search = [node.name, node.address, node.host, node.server_model || "型号未识别"]
+        .filter(Boolean).join(" ").toLowerCase();
+      const checkbox = el("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.node = node.id;
+      checkbox.checked = members.has(node.id);
+      checkbox.disabled = checkbox.checked;
+      checkbox.addEventListener("change", () => this.updateNodeSelection());
+      const identity = el("span", "folder-node-identity");
+      identity.append(el("span", "", node.name), el("small", "", node.server_model || "型号未识别"));
+      label.append(checkbox, identity);
+      if (checkbox.disabled) label.append(el("small", "folder-node-added", "已加入"));
+      return label;
+    });
+    $("folder-node-options").replaceChildren(...options);
+    $("folder-nodes-empty").hidden = options.length > 0;
+    $("folder-nodes-error").hidden = true;
+    this.filterNodeOptions();
+    $("folder-nodes-dialog").showModal();
+  },
+  filterNodeOptions() {
+    const terms = $("folder-nodes-search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const options = [...$("folder-node-options").querySelectorAll(".folder-node-option")];
+    for (const option of options) option.hidden = !terms.every(term => option.dataset.search.includes(term));
+    const count = options.filter(option => !option.hidden).length;
+    $("folder-nodes-results").textContent = "显示 " + count + " / " + options.length + " 个节点";
+    $("folder-nodes-no-results").hidden = count > 0 || options.length === 0;
+    this.updateNodeSelection();
+  },
+  updateNodeSelection() {
+    const available = [...$("folder-node-options").querySelectorAll("input:not(:disabled)")];
+    const count = available.filter(input => input.checked).length;
+    $("folder-nodes-count").textContent = "已选择 " + count + " 个节点";
+    $("folder-nodes-save").disabled = directorySaving || count === 0;
+    $("folder-nodes-select-all").disabled = directorySaving || !available.some(input => !input.parentElement.hidden);
+    $("folder-nodes-clear").disabled = directorySaving || count === 0;
   },
   nodeHandle(node, small = false) {
     const handle = el("button", small ? "node-folder-handle compact" : "node-folder-handle", "⋮⋮");
@@ -241,6 +293,39 @@ const FolderUI = {
     for (const id of ["node-folders-close", "node-folders-cancel"]) {
       $(id).addEventListener("click", () => $("node-folders-dialog").close());
     }
+    for (const id of ["folder-nodes-close", "folder-nodes-cancel"]) {
+      $(id).addEventListener("click", () => $("folder-nodes-dialog").close());
+    }
+    $("folder-nodes-search").addEventListener("input", () => this.filterNodeOptions());
+    for (const id of ["folder-nodes-select-all", "folder-nodes-clear"]) {
+      $(id).addEventListener("click", () => {
+        $("folder-node-options").querySelectorAll("input:not(:disabled)").forEach(input => {
+          if (id === "folder-nodes-clear") input.checked = false;
+          else if (!input.parentElement.hidden) input.checked = true;
+        });
+        this.updateNodeSelection();
+      });
+    }
+    $("folder-nodes-form").addEventListener("submit", async event => {
+      event.preventDefault();
+      if (directorySaving) return;
+      const node_ids = [...$("folder-node-options").querySelectorAll("input:checked:not(:disabled)")]
+        .map(input => input.dataset.node);
+      if (!node_ids.length) return;
+      $("folder-nodes-save").disabled = true;
+      $("folder-nodes-select-all").disabled = true;
+      $("folder-nodes-clear").disabled = true;
+      $("folder-nodes-error").hidden = true;
+      try {
+        await this.save({action: "assign_many", folder_id: this.addingFolder, node_ids}, "所选节点已加入目录。");
+        this.expanded.add(this.addingFolder);
+        this.refresh();
+        $("folder-nodes-dialog").close();
+      } catch (error) {
+        $("folder-nodes-error").textContent = error.message;
+        $("folder-nodes-error").hidden = false;
+      } finally { this.updateNodeSelection(); }
+    });
     $("folder-form").addEventListener("submit", async event => {
       event.preventDefault();
       if (!$("folder-name").reportValidity() || directorySaving) return;
@@ -250,7 +335,7 @@ const FolderUI = {
       try {
         const saved = await this.save({action: this.editing ? "rename" : "create",
           folder_id: this.editing, name: $("folder-name").value.trim()},
-          this.editing ? "目录名称已保存。" : "目录已创建，可拖入节点。");
+          this.editing ? "目录名称已保存。" : "目录已创建，点击旁边 ＋ 添加节点。");
         if (!this.editing) { this.expanded.add(saved.folder_id); this.refresh(); }
         $("folder-dialog").close();
       } catch (error) {

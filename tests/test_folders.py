@@ -99,6 +99,51 @@ class FolderTests(unittest.TestCase):
         self.assertEqual(self.request({"action": "set_membership", "node_id": "node-b:22", "folder_ids": []})[0], 200)
         self.assertEqual(self.monitor.config["folders"][0]["node_ids"], [])
 
+    def test_batch_assign_preserves_existing_members_and_other_directories(self):
+        first, second = self.create("Custom A"), self.create("Custom B")
+        self.request({"action": "assign", "folder_id": first, "node_id": "node-a:22"})
+        self.request({"action": "assign", "folder_id": second, "node_id": "node-b:22"})
+        before = copy.deepcopy(self.monitor.config)
+        workers = dict(self.monitor.workers)
+        histories = [copy.deepcopy(worker.state["history"]) for worker in workers.values()]
+        payload = {"action": "assign_many", "folder_id": first,
+                   "node_ids": ["node-b:22", "node-a:22", "node-b:22"]}
+        for _ in range(2):
+            status, response = self.request(payload)
+            self.assertEqual(status, 200, response)
+            self.assertEqual(response["folders"][0]["node_ids"], ["node-a:22", "node-b:22"])
+            self.assertEqual(response["folders"][1]["node_ids"], ["node-b:22"])
+        loaded = validate_config(json.loads(self.path.read_text(encoding="utf-8")), self.base)
+        self.assertEqual(loaded["folders"], self.monitor.config["folders"])
+        self.assertEqual({key: value for key, value in self.monitor.config.items() if key != "folders"},
+                         {key: value for key, value in before.items() if key != "folders"})
+        self.assertTrue(self.monitor.paused)
+        self.assertTrue(all(self.monitor.workers[key] is worker for key, worker in workers.items()))
+        self.assertEqual([worker.state["history"] for worker in workers.values()], histories)
+
+    def test_invalid_batch_is_rejected_atomically(self):
+        first = self.create("Custom A")
+        previous = self.path.read_bytes()
+        for selected in (None, "node-a:22", [], [1], ["node-a:22", "missing-node"], ["node-a:22"] * 65):
+            with self.subTest(selected=selected):
+                self.assertEqual(self.request({"action": "assign_many", "folder_id": first,
+                                               "node_ids": selected})[0], 400)
+                self.assertEqual(self.monitor.config["folders"][0]["node_ids"], [])
+                self.assertEqual(self.path.read_bytes(), previous)
+        self.assertEqual(self.request({"action": "assign_many", "folder_id": "missing-folder",
+                                       "node_ids": ["node-a:22"]})[0], 400)
+        self.assertEqual(self.path.read_bytes(), previous)
+
+    def test_batch_write_failure_keeps_members_unchanged(self):
+        first = self.create("Custom A")
+        previous = copy.deepcopy(self.monitor.config)
+        saved = self.path.read_bytes()
+        with patch.object(self.monitor, "save_config", side_effect=OSError("synthetic write failure")):
+            self.assertEqual(self.request({"action": "assign_many", "folder_id": first,
+                                           "node_ids": ["node-a:22", "node-b:22"]})[0], 500)
+        self.assertEqual(self.monitor.config, previous)
+        self.assertEqual(self.path.read_bytes(), saved)
+
     def test_token_origin_and_invalid_operations_are_rejected_without_writes(self):
         self.assertEqual(self.request(headers={})[0], 403)
         self.assertEqual(self.request(headers={"X-Monitor-Token": self.server.token,

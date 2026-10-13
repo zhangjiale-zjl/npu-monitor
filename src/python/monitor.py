@@ -718,13 +718,21 @@ class Monitor:
                         members.append(node_id)
                     elif item["id"] not in selected and node_id in members:
                         members.remove(node_id)
-            elif action in {"rename", "delete", "assign", "remove"}:
+            elif action in {"rename", "delete", "assign", "assign_many", "remove"}:
                 if not folder:
                     raise ValueError("目录已移除，请刷新后重试")
                 if action == "rename":
                     folder["name"] = data.get("name")
                 elif action == "delete":
                     folders.remove(folder)
+                elif action == "assign_many":
+                    selected = data.get("node_ids")
+                    if not isinstance(selected, list) or not 1 <= len(selected) <= MAX_NODES or \
+                            any(not isinstance(value, str) or value not in node_ids for value in selected):
+                        raise ValueError("请选择有效节点，节点已移除时请刷新后重试")
+                    for node_id in selected:
+                        if node_id not in folder["node_ids"]:
+                            folder["node_ids"].append(node_id)
                 else:
                     node_id = data.get("node_id")
                     if not isinstance(node_id, str) or node_id not in node_ids:

@@ -38,6 +38,40 @@ function harness() {
   return {context, ui: context.ui, save, get, requests, renders, notices, nodes, folders};
 }
 
+function pickerHarness() {
+  const h = harness(), elements = new Map();
+  const element = (tag = "div", className = "", text = "") => ({
+    tag, className, textContent: text, children: [], dataset: {}, listeners: {},
+    checked: false, disabled: false, hidden: false, value: "", open: false,
+    setAttribute(name, value) { this[name] = value; },
+    addEventListener(name, handler) { this.listeners[name] = handler; },
+    append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } },
+    replaceChildren(...children) { this.children = []; this.append(...children); },
+    querySelectorAll(selector) {
+      const descendants = this.children.flatMap(child => [child, ...child.querySelectorAll("*")]);
+      if (selector === "*") return descendants;
+      if (selector === ".folder-node-option") return descendants.filter(child => child.className.includes("folder-node-option"));
+      return descendants.filter(child => child.tag === "input"
+        && (!selector.includes(":checked") || child.checked)
+        && (!selector.includes(":disabled") || !child.disabled));
+    },
+    showModal() { this.open = true; }, close() { this.open = false; }
+  });
+  h.context.$ = id => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  h.context.el = element;
+  h.context.window = {addEventListener: () => {}};
+  h.context.document.addEventListener = () => {};
+  h.nodes[0].server_model = "Synthetic A3";
+  h.nodes[1].server_model = "Synthetic A2";
+  h.nodes[2].server_model = "Synthetic A5";
+  h.ui.init();
+  h.ui.addNodes(h.folders[1]);
+  return {...h, elements, input: h.context.$};
+}
+
 async function main() {
   let h = harness();
   assert.deepEqual(plain(h.ui.members(h.folders[0])).map(node => node.address), ["127.0.0.2", "127.0.0.10"]);
@@ -94,6 +128,63 @@ async function main() {
   h.ui.finishNode({pointerId: 7, type: "pointerup"});
   assert.equal(h.requests.length, 0);
   assert.equal(h.renders.length, 0); // A normal click keeps its button alive to open membership selection.
-  console.log("Custom directory checks passed: shared nodes, numeric IP order, atomic actions, stale polls, failed saves and drag/click behavior.");
+
+  h = pickerHarness();
+  let inputs = h.input("folder-node-options").querySelectorAll("input");
+  assert.deepEqual(inputs.map(input => input.dataset.node), [h.nodes[1].id, h.nodes[2].id, h.nodes[0].id]);
+  assert.equal(inputs[0].checked, true);
+  assert.equal(inputs[0].disabled, true);
+  assert.equal(h.input("folder-nodes-save").disabled, true);
+  assert.equal(h.input("folder-nodes-dialog").open, true);
+  inputs[1].checked = true;
+  inputs[1].listeners.change();
+  assert.equal(h.input("folder-nodes-count").textContent, "已选择 1 个节点");
+  let submit = h.input("folder-nodes-form").listeners.submit({preventDefault() {}});
+  assert.deepEqual(h.requests[0], {url: "/api/folders", body: {
+    action: "assign_many", folder_id: "b", node_ids: [h.nodes[2].id]}});
+  h.save.resolve({folders: h.folders});
+  await submit;
+  assert.equal(h.input("folder-nodes-dialog").open, false);
+  assert.equal(h.ui.expanded.has("b"), true);
+
+  h = pickerHarness();
+  inputs = h.input("folder-node-options").querySelectorAll("input");
+  h.input("folder-nodes-search").value = "a5 127.0.0.3";
+  h.input("folder-nodes-search").listeners.input();
+  assert.deepEqual(inputs.map(input => input.parentElement.hidden), [true, false, true]);
+  h.input("folder-nodes-select-all").listeners.click();
+  assert.deepEqual(inputs.map(input => input.checked), [true, true, false]);
+  h.input("folder-nodes-search").value = "SYNTHETIC A3";
+  h.input("folder-nodes-search").listeners.input();
+  assert.deepEqual(inputs.map(input => input.parentElement.hidden), [true, true, false]);
+  h.input("folder-nodes-select-all").listeners.click();
+  assert.deepEqual(inputs.map(input => input.checked), [true, true, true]);
+  h.input("folder-nodes-search").value = "no-matching-ip";
+  h.input("folder-nodes-search").listeners.input();
+  assert.equal(h.input("folder-nodes-no-results").hidden, false);
+  assert.equal(h.input("folder-nodes-select-all").disabled, true);
+  assert.equal(h.input("folder-nodes-count").textContent, "已选择 2 个节点");
+  submit = h.input("folder-nodes-form").listeners.submit({preventDefault() {}});
+  assert.deepEqual(h.requests[0].body.node_ids, [h.nodes[2].id, h.nodes[0].id]);
+  h.save.reject(new Error("Synthetic batch save failure"));
+  await submit;
+  assert.equal(h.input("folder-nodes-dialog").open, true);
+  assert.equal(h.input("folder-nodes-error").hidden, false);
+  assert.equal(h.input("folder-nodes-error").textContent, "Synthetic batch save failure");
+  assert.equal(h.input("folder-nodes-save").disabled, false);
+  assert.deepEqual(plain(h.context.state.config.folders), h.folders);
+  h.input("folder-nodes-clear").listeners.click();
+  assert.deepEqual(inputs.map(input => input.checked), [true, false, false]);
+  assert.equal(h.input("folder-nodes-save").disabled, true);
+
+  h = pickerHarness();
+  h.context.state.nodes = [];
+  h.ui.addNodes(h.folders[1]);
+  assert.equal(h.input("folder-nodes-empty").hidden, false);
+  assert.equal(h.input("folder-nodes-save").disabled, true);
+  assert.equal(h.input("folder-nodes-select-all").disabled, true);
+  assert.equal(h.input("folder-nodes-no-results").hidden, true);
+  assert.equal(h.requests.length, 0);
+  console.log("Custom directory checks passed: shared nodes, atomic batch additions, IP/model search, persistent filtered selections, failed saves and drag/click behavior.");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

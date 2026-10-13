@@ -33,7 +33,7 @@
       <div class="overview"><div><h2 id="view-title" aria-live="polite">全部节点 · NPU 总览</h2><p id="view-description">等待节点数据</p></div><div class="summary" id="summary"></div></div>
       <div id="nodes" class="model-groups"></div>
       <div id="empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▦</div><h3>添加需要监控的节点</h3><p>填写节点地址，沿用本机 SSH 配置或指定私钥文件。</p><button id="empty-settings" class="primary">＋ 添加节点</button></div>
-      <div id="folder-empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▤</div><h3>目录中暂无节点</h3><p>从全部节点拖入此目录，或点击节点的目录滑块选择归属。</p><button id="folder-show-all" class="primary">查看全部节点</button></div>
+      <div id="folder-empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▤</div><h3>目录中暂无节点</h3><p>点击左侧目录旁的 ＋ 选择节点，也可拖入节点或点击节点滑块选择归属。</p><button id="folder-show-all" class="primary">查看全部节点</button></div>
     </section>
   </main>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
@@ -62,6 +62,11 @@
     <div class="dialog-head"><div><h2 id="node-folders-title">节点目录</h2><p id="node-folders-description"></p></div><button id="node-folders-close" type="button" class="icon-button" aria-label="关闭节点目录">×</button></div>
     <div class="dialog-body"><div id="node-folder-options" class="node-folder-options"></div><p id="node-folders-empty" class="help" hidden>先在左侧“自定义目录”点击 ＋ 创建目录。</p><p id="node-folders-error" class="folder-error" role="alert" hidden></p></div>
     <div class="dialog-footer"><span>勾选多个目录，取消勾选可移出</span><button id="node-folders-cancel" type="button" class="subtle">取消</button><button id="node-folders-save" type="submit" class="primary">保存归属</button></div>
+  </form></dialog>
+  <dialog id="folder-nodes-dialog" class="folder-dialog" aria-labelledby="folder-nodes-title"><form id="folder-nodes-form">
+    <div class="dialog-head"><div><h2 id="folder-nodes-title">添加节点</h2><p>勾选一个或多个节点加入目录。</p></div><button id="folder-nodes-close" type="button" class="icon-button" aria-label="关闭目录节点选择">×</button></div>
+    <div class="dialog-body"><label class="folder-node-search">搜索 IP / 机器型号<input id="folder-nodes-search" type="search" placeholder="输入 IP 或机器型号，多个条件用空格分隔" autocomplete="off"></label><p id="folder-nodes-results" class="help" role="status" aria-live="polite"></p><div class="folder-node-tools"><span id="folder-nodes-count" role="status" aria-live="polite">已选择 0 个节点</span><button id="folder-nodes-select-all" type="button" class="subtle">全选结果</button><button id="folder-nodes-clear" type="button" class="subtle">清空选择</button></div><div id="folder-node-options" class="node-folder-options"></div><p id="folder-nodes-empty" class="help" hidden>暂无可选节点，请先在看板中添加监控节点。</p><p id="folder-nodes-no-results" class="help" hidden>没有匹配的节点，请调整 IP 或机器型号。</p><p id="folder-nodes-error" class="folder-error" role="alert" hidden></p></div>
+    <div class="dialog-footer"><span>已加入的节点保留，其他目录归属保留</span><button id="folder-nodes-cancel" type="button" class="subtle">取消</button><button id="folder-nodes-save" type="submit" class="primary">加入目录</button></div>
   </form></dialog>
 </body>
 </html>
