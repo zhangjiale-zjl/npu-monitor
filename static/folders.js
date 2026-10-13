@@ -91,6 +91,7 @@ const FolderUI = {
           name.title = node.name;
           name.addEventListener("pointerdown", event => event.stopPropagation());
           name.addEventListener("click", () => {
+            NodeSearch.clear(false);
             this.selected = folder.id;
             selectedModel = null;
             this.refresh();
@@ -157,8 +158,7 @@ const FolderUI = {
     const members = new Set(folder.node_ids);
     const options = [...state.nodes].sort(compareNodeAddresses).map(node => {
       const label = el("label", "node-folder-option folder-node-option");
-      label.dataset.search = [node.name, node.address, node.host, node.server_model || "型号未识别"]
-        .filter(Boolean).join(" ").toLowerCase();
+      label.dataset.search = NodeSearch.text(node);
       const checkbox = el("input");
       checkbox.type = "checkbox";
       checkbox.dataset.node = node.id;
@@ -178,9 +178,9 @@ const FolderUI = {
     $("folder-nodes-dialog").showModal();
   },
   filterNodeOptions() {
-    const terms = $("folder-nodes-search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const query = $("folder-nodes-search").value;
     const options = [...$("folder-node-options").querySelectorAll(".folder-node-option")];
-    for (const option of options) option.hidden = !terms.every(term => option.dataset.search.includes(term));
+    for (const option of options) option.hidden = !NodeSearch.matchesText(option.dataset.search, query);
     const count = options.filter(option => !option.hidden).length;
     $("folder-nodes-results").textContent = "显示 " + count + " / " + options.length + " 个节点";
     $("folder-nodes-no-results").hidden = count > 0 || options.length === 0;
@@ -285,6 +285,7 @@ const FolderUI = {
   },
   init() {
     $("folder-show-all").addEventListener("click", () => {
+      NodeSearch.clear(false);
       this.selected = null; selectedModel = null; this.refresh();
     });
     for (const id of ["folder-close", "folder-cancel"]) {

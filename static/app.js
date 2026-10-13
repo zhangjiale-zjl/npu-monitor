@@ -532,10 +532,155 @@ function modelGroups(nodes) {
     || compareModelNames(a, b));
 }
 
+const NodeSearch = {
+  query: "",
+  selectedId: null,
+  previewOpen: false,
+  previewSignature: "",
+  candidates: [],
+  highlighted: -1,
+  composing: false,
+  normalize(value) { return String(value ?? "").normalize("NFKC").toLowerCase(); },
+  text(node) {
+    return this.normalize([node.address, node.host, node.name, node.server_model || "型号未识别", node.platform]
+      .filter(Boolean).join(" "));
+  },
+  matchesText(text, query) {
+    const terms = this.normalize(query).trim().split(/\s+/).filter(Boolean);
+    const value = this.normalize(text);
+    return terms.every(term => value.includes(term));
+  },
+  matches(node, query) { return this.matchesText(this.text(node), query); },
+  active() { return !!this.query || this.selectedId !== null; },
+  filter(nodes) {
+    return nodes.filter(node => this.selectedId !== null ? node.id === this.selectedId : this.matches(node, this.query));
+  },
+  closePreview() {
+    this.previewOpen = false;
+    this.highlighted = -1;
+    $("node-search-dropdown").hidden = true;
+    $("dashboard-search").setAttribute("aria-expanded", "false");
+    $("dashboard-search").removeAttribute("aria-activedescendant");
+  },
+  updatePreview() {
+    const input = $("dashboard-search");
+    $("node-search-clear").hidden = !input.value && !this.active();
+    if (!state || !this.previewOpen || !input.value.trim()) { this.closePreview(); return; }
+    const candidates = modelGroups(state.nodes).flatMap(([, nodes]) => nodes).filter(node => this.matches(node, input.value));
+    const signature = JSON.stringify([input.value, candidates.map(node => [node.id, node.name, node.address,
+      node.host, node.server_model, node.status, node.devices.some(device => device.health !== "OK")])]);
+    $("node-search-dropdown").hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    if (signature === this.previewSignature) { this.highlight(); return; }
+    const highlightedId = this.candidates[this.highlighted]?.id;
+    this.previewSignature = signature;
+    this.candidates = candidates;
+    this.highlighted = candidates.findIndex(node => node.id === highlightedId);
+    $("node-search-preview-count").textContent = candidates.length
+      ? `匹配 ${candidates.length} 个节点 · 点击“搜索”展示全部结果`
+      : "没有匹配的节点，请调整 IP、机型或名称。";
+    const options = candidates.map((node, index) => {
+      const option = el("button", "search-option");
+      option.type = "button";
+      option.id = `node-search-option-${index}`;
+      option.setAttribute("role", "option");
+      option.setAttribute("tabindex", "-1");
+      option.title = "点击查看此节点；点击“搜索”查看全部匹配节点";
+      option.append(el("span", "search-option-name", node.name || node.address || node.host),
+        el("small", "search-option-info", `${node.address || node.host} · ${node.server_model || "型号未识别"} · ${statusText(node)}`));
+      option.addEventListener("pointerdown", event => event.preventDefault());
+      option.addEventListener("click", () => this.apply(node));
+      return option;
+    });
+    $("node-search-options").replaceChildren(...options);
+    this.highlight();
+  },
+  highlight() {
+    const input = $("dashboard-search");
+    const options = [...$("node-search-options").querySelectorAll(".search-option")];
+    options.forEach((option, index) => {
+      const selected = index === this.highlighted;
+      option.setAttribute("aria-selected", String(selected));
+      option.classList.toggle("highlighted", selected);
+    });
+    if (options[this.highlighted]) {
+      input.setAttribute("aria-activedescendant", options[this.highlighted].id);
+      options[this.highlighted].scrollIntoView({block: "nearest"});
+    } else input.removeAttribute("aria-activedescendant");
+  },
+  apply(node = null) {
+    if (!state || this.composing) return;
+    if (node) $("dashboard-search").value = node.address || node.host;
+    this.query = $("dashboard-search").value.trim();
+    this.selectedId = node?.id ?? null;
+    selectedModel = null;
+    FolderUI.selected = null;
+    this.closePreview();
+    lastRender = "";
+    render();
+  },
+  clear(renderNow = true) {
+    this.query = "";
+    this.selectedId = null;
+    $("dashboard-search").value = "";
+    $("node-search-clear").hidden = true;
+    this.closePreview();
+    if (renderNow) {
+      selectedModel = null;
+      FolderUI.selected = null;
+      lastRender = "";
+      render();
+    }
+  },
+  init() {
+    const input = $("dashboard-search");
+    input.addEventListener("input", () => {
+      if (this.composing) return;
+      if (!input.value.trim()) { this.clear(); return; }
+      this.previewOpen = true;
+      this.updatePreview();
+    });
+    input.addEventListener("focus", () => { this.previewOpen = true; this.updatePreview(); });
+    input.addEventListener("compositionstart", () => { this.composing = true; });
+    input.addEventListener("compositionend", () => {
+      this.composing = false;
+      if (!input.value.trim()) this.clear();
+      else { this.previewOpen = true; this.updatePreview(); }
+    });
+    input.addEventListener("keydown", event => {
+      if (event.isComposing || this.composing) return;
+      if (event.key === "Escape") { event.preventDefault(); this.closePreview(); }
+      else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        this.previewOpen = true;
+        this.updatePreview();
+        if (this.candidates.length && this.previewOpen) {
+          this.highlighted = event.key === "ArrowDown" ? (this.highlighted + 1) % this.candidates.length
+            : this.highlighted <= 0 ? this.candidates.length - 1 : this.highlighted - 1;
+          this.highlight();
+        }
+      } else if (event.key === "Enter" && this.previewOpen && this.highlighted >= 0) {
+        event.preventDefault();
+        this.apply(this.candidates[this.highlighted]);
+      }
+    });
+    $("node-search-form").addEventListener("submit", event => { event.preventDefault(); this.apply(); });
+    for (const id of ["node-search-clear", "search-show-all"]) {
+      $(id).addEventListener("click", () => { this.clear(); input.focus(); });
+    }
+    $("node-search-form").addEventListener("focusout", event => {
+      if (!$("node-search-form").contains(event.relatedTarget)) this.closePreview();
+    });
+    document.addEventListener("pointerdown", event => {
+      if (!$("node-search-form").contains(event.target)) this.closePreview();
+    });
+  }
+};
+
 function markDirectorySelection() {
   $("model-directory").querySelectorAll(".model-filter").forEach(button => {
-    const selected = FolderUI.selected !== null ? button.dataset.folder === FolderUI.selected
-      : !button.dataset.folder && button.dataset.model === (selectedModel ?? "");
+    const selected = !NodeSearch.active() && (FolderUI.selected !== null ? button.dataset.folder === FolderUI.selected
+      : !button.dataset.folder && button.dataset.model === (selectedModel ?? ""));
     button.classList.toggle("selected", selected);
     button.setAttribute("aria-pressed", String(selected));
   });
@@ -552,6 +697,7 @@ function directoryButton(label, count, model, folderId = null) {
   button.title = `${label} · ${count} 个节点`;
   button.addEventListener("click", () => {
     if (performance.now() < directoryClickSuppressedUntil) return;
+    NodeSearch.clear(false);
     selectedModel = model;
     FolderUI.selected = folderId;
     render();
@@ -724,10 +870,13 @@ function modelSection(model, nodes) {
 
 function render() {
   if (!state || FolderUI.drag) return;
+  NodeSearch.updatePreview();
   const allGroups = modelGroups(state.nodes);
   const folder = FolderUI.current();
   if (selectedModel !== null && !allGroups.some(([model]) => model === selectedModel)) selectedModel = null;
-  const signature = JSON.stringify([state.nodes, state.paused, state.config, selectedModel, FolderUI.selected]);
+  const searching = NodeSearch.active();
+  const signature = JSON.stringify([state.nodes, state.paused, state.config, selectedModel, FolderUI.selected,
+    NodeSearch.query, NodeSearch.selectedId]);
   if (signature === lastRender) return;
   lastRender = signature;
   $("demo-label").hidden = !state.demo;
@@ -735,13 +884,15 @@ function render() {
   $("refresh").disabled = state.paused;
   $("poll-state").textContent = state.paused ? "采集已暂停" : `每 ${state.config.interval} 秒采集`;
   if (document.activeElement !== $("interval")) $("interval").value = state.config.interval;
-  const groups = folder ? [[folder.name, FolderUI.members(folder)]]
+  const groups = searching ? modelGroups(NodeSearch.filter(state.nodes)) : folder ? [[folder.name, FolderUI.members(folder)]]
     : selectedModel === null ? allGroups : allGroups.filter(([model]) => model === selectedModel);
   const nodes = groups.flatMap(([, members]) => members);
   const devices = nodes.flatMap(n => n.devices);
   const online = nodes.filter(n => n.status === "ok").length;
   renderDirectory(allGroups);
-  $("view-title").textContent = `${folder?.name ?? selectedModel ?? "全部节点"} · NPU 总览`;
+  $("view-title").textContent = `${searching ? "搜索结果" : folder?.name ?? selectedModel ?? "全部节点"} · NPU 总览`;
+  $("node-search-status").textContent = searching ? `“${NodeSearch.query}” · ${nodes.length} 个匹配节点` : "";
+  $("node-search-status").hidden = !searching;
   $("view-description").textContent = state.paused ? "采集已暂停，展示最近一次结果" : `${online} / ${nodes.length} 节点采集正常 · ${folder ? "自定义目录" : selectedModel === null ? "按服务器型号分区" : "当前机型"}`;
   $("summary").replaceChildren();
   const cards = nodes.reduce((sum, node) => sum + cardCount(node.devices), 0);
@@ -749,8 +900,10 @@ function render() {
     const item = el("div", "summary-item", label); item.prepend(el("strong", "", value)); $("summary").append(item);
   }
   $("nodes").replaceChildren(...groups.map(([model, members]) => modelSection(model, members)));
-  $("empty").hidden = state.nodes.length > 0 || !!folder;
-  $("folder-empty").hidden = !folder || nodes.length > 0;
+  $("empty").hidden = state.nodes.length > 0 || !!folder || searching;
+  $("folder-empty").hidden = !folder || nodes.length > 0 || searching;
+  $("search-empty").hidden = !searching || nodes.length > 0;
+  $("search-empty-description").textContent = `没有匹配“${NodeSearch.query}”的节点，请调整关键词或查看全部节点。`;
   applyDirectoryWidth();
 }
 
@@ -1164,6 +1317,7 @@ async function control(action) {
 }
 $("refresh").addEventListener("click", () => control("refresh"));
 $("pause").addEventListener("click", () => control(state?.paused ? "resume" : "pause"));
+NodeSearch.init();
 FolderUI.init();
 poll();
 setInterval(poll, 1000);

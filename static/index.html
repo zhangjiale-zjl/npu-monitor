@@ -30,10 +30,15 @@
       </div>
     </aside>
     <section class="content" aria-label="NPU 监控数据">
+      <form id="node-search-form" class="node-search-bar" role="search">
+        <div class="node-search-field"><label for="dashboard-search" class="visually-hidden">搜索 IP、机型或节点名称</label><input id="dashboard-search" type="search" role="combobox" placeholder="搜索 IP、机型或节点名称" autocomplete="off" aria-autocomplete="list" aria-controls="node-search-options" aria-expanded="false"><div id="node-search-dropdown" class="node-search-dropdown" hidden><p id="node-search-preview-count" class="search-preview-count" role="status" aria-live="polite"></p><div id="node-search-options" role="listbox" aria-label="匹配节点"></div></div></div>
+        <button type="submit" class="primary">搜索</button><button id="node-search-clear" type="button" class="subtle" hidden>清除搜索</button><span id="node-search-status" class="node-search-status" role="status" aria-live="polite" hidden></span>
+      </form>
       <div class="overview"><div><h2 id="view-title" aria-live="polite">全部节点 · NPU 总览</h2><p id="view-description">等待节点数据</p></div><div class="summary" id="summary"></div></div>
       <div id="nodes" class="model-groups"></div>
       <div id="empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▦</div><h3>添加需要监控的节点</h3><p>填写节点地址，沿用本机 SSH 配置或指定私钥文件。</p><button id="empty-settings" class="primary">＋ 添加节点</button></div>
       <div id="folder-empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">▤</div><h3>目录中暂无节点</h3><p>点击左侧目录旁的 ＋ 选择节点，也可拖入节点或点击节点滑块选择归属。</p><button id="folder-show-all" class="primary">查看全部节点</button></div>
+      <div id="search-empty" class="empty" hidden><div class="empty-symbol" aria-hidden="true">⌕</div><h3>没有匹配的节点</h3><p id="search-empty-description"></p><button id="search-show-all" type="button" class="primary">查看全部节点</button></div>
     </section>
   </main>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
