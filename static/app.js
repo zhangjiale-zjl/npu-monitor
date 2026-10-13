@@ -961,6 +961,17 @@ function configGroup(model) {
   return list;
 }
 
+function updateAddNodeRows() {
+  if (settingsMode !== "add") return;
+  const rows = [...$("config-nodes").querySelectorAll(".config-node")];
+  rows.forEach((row, index) => {
+    row.querySelector("legend").textContent = `新节点 ${index + 1} · 自动识别环境型号`;
+    const remove = row.querySelector(".remove-node");
+    remove.hidden = rows.length === 1;
+    remove.setAttribute("aria-label", `移除待添加节点 ${index + 1}`);
+  });
+}
+
 function addConfigNode(node = {}, {model = "待识别机型", open = true} = {}) {
   const fragment = $("config-node-template").content.cloneNode(true);
   const fieldset = fragment.querySelector("fieldset");
@@ -992,8 +1003,13 @@ function addConfigNode(node = {}, {model = "待识别机型", open = true} = {})
   fieldset.addEventListener("input", () => clearConnectionTest(fieldset));
   fieldset.addEventListener("change", () => clearConnectionTest(fieldset));
   if (settingsMode === "add") {
-    fieldset.querySelector(".remove-node").hidden = true;
+    fieldset.querySelector(".remove-node").addEventListener("click", () => {
+      if ($("save-config").disabled || $("config-nodes").querySelectorAll(".config-node").length <= 1) return;
+      fieldset.remove();
+      updateAddNodeRows();
+    });
     $("config-nodes").append(fragment);
+    updateAddNodeRows();
     return fieldset;
   }
   const list = configGroup(model);
@@ -1030,10 +1046,11 @@ function openSettings({add = false, id = null} = {}) {
   settingsNodeOrder = new Map(Object.entries(state.config.node_order || {}).map(([model, ids]) => [model, [...ids]]));
   settingsModelOrder = [...(state.config.model_order || [])];
   $("settings-title").textContent = add ? "添加节点" : "管理节点";
-  $("settings-description").textContent = add ? "填写连接信息，可先测试连接再添加。"
+  $("settings-description").textContent = add ? "点击 ＋ 增加节点，可逐个测试连接并一次添加多个节点。"
     : "默认按机型、IP 升序；拖动机型或节点左侧滑块调整顺序，保存后生效。";
   $("config-nodes-title").textContent = add ? "节点信息" : "监控节点";
-  $("add-node").hidden = add;
+  $("add-node").hidden = false;
+  $("add-node").textContent = add ? "＋ 增加节点" : "＋ 添加节点";
   $("reset-model-order").hidden = add;
   $("connection-defaults").hidden = add;
   $("connection-defaults").open = false;
@@ -1067,6 +1084,7 @@ $("new-node").addEventListener("click", () => openSettings({add: true}));
 $("empty-settings").addEventListener("click", () => openSettings({add: true}));
 for (const id of ["close-settings", "cancel-settings"]) $(id).addEventListener("click", () => $("settings-dialog").close());
 $("add-node").addEventListener("click", () => {
+  if ($("save-config").disabled) return;
   const fieldset = addConfigNode();
   fieldset.scrollIntoView({block: "nearest"});
   fieldset.querySelector('[data-field="host"]').focus();

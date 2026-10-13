@@ -48,6 +48,27 @@ async function main() {
   assert.deepEqual(h.requests.at(-1), {url: "/api/nodes", body: {nodes: [h.node]}});
   assert.equal(h.elements["config-error"].hidden, true);
 
+  h = harness("add");
+  const secondFieldset = {dataset: {}};
+  const secondNode = {...h.node, host: "synthetic-node-b", auth_type: "password", password: "synthetic-batch-password"};
+  h.elements["config-nodes"].querySelectorAll = selector => selector === ".config-node"
+    ? [h.fieldset, secondFieldset] : [];
+  h.context.configNodeValue = fieldset => fieldset === h.fieldset ? h.node : secondNode;
+  await h.listeners.submit({preventDefault: () => {}});
+  assert.deepEqual(h.requests, [{url: "/api/nodes", body: {nodes: [h.node, secondNode]}}]);
+  assert.deepEqual(plain(h.context.state.config.nodes), [{host: "existing-node"}]);
+  assert.equal(h.context.state.config.identity_file, "saved-default-key");
+
+  h = harness("add");
+  let closed = false;
+  h.elements["settings-dialog"].close = () => { closed = true; };
+  h.context.api = async () => { throw new Error("Synthetic batch rejected"); };
+  await h.listeners.submit({preventDefault: () => {}});
+  assert.equal(closed, false);
+  assert.equal(h.elements["save-config"].disabled, false);
+  assert.equal(h.elements["config-error"].hidden, false);
+  assert.equal(h.elements["config-error"].textContent, "Synthetic batch rejected");
+
   h = harness("manage");
   h.elements["default-key"].value = "draft-default-key";
   h.elements.timeout.value = "23";
@@ -63,7 +84,7 @@ async function main() {
   h.elements["default-key"].value = "";
   await h.context.testConfigNode(h.fieldset);
   assert.equal(h.requests.at(-1).body.identity_file, "");
-  console.log("Default key checks passed: add inherits saved defaults, append preserves server config, manage uses draft defaults.");
+  console.log("Default key checks passed: batch add inherits saved defaults, uses one append request, preserves server config and keeps failed drafts; manage uses draft defaults.");
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
